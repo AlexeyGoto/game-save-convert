@@ -1,82 +1,82 @@
 # Game Save Convert
 
-Tool for converting game save files between different Steam IDs. Automatically decrypts saves signed with an unknown Steam ID and re-encrypts them with your current ID.
+Утилита для конвертации игровых сохранений между разными Steam ID. Автоматически расшифровывает сейвы, подписанные неизвестным Steam ID, и перешифровывает под ваш текущий ID.
 
-## How it works
+## Как это работает
 
-Many cracked games encrypt save files using the player's Steam ID as part of the encryption key. When saves come from a different source (another PC, a different crack/repack), they become unreadable because the Steam ID doesn't match.
+Многие взломанные игры шифруют сохранения с использованием Steam ID игрока как части ключа. Когда сейвы приходят из другого источника (другой ПК, другой кряк/репак), они становятся нечитаемыми из-за несовпадения Steam ID.
 
-This tool:
-1. Downloads the latest list of known Steam IDs
-2. Tries to decrypt saves with each known ID (brute-force)
-3. Once the source ID is found, re-signs saves with your target Steam ID
-4. Creates a backup before any changes
+Утилита:
+1. Скачивает актуальный список известных Steam ID
+2. Перебором пробует расшифровать сейвы каждым известным ID
+3. Найдя исходный ID — перешифровывает сейвы под ваш целевой Steam ID
+4. Перед изменениями создаёт резервную копию
 
-## Quick Install
+## Быстрая установка
 
-Run in PowerShell (as Administrator):
+Запустить в PowerShell (от администратора):
 
 ```powershell
 irm https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/install.ps1 | iex
 ```
 
-This will:
-- Download and extract [MandarinJuice](https://github.com/mi5hmash/MandarinJuice) CLI
-- Install .NET 10 runtime if needed
-- Install `save-convert.exe` and add it to PATH
+Установщик:
+- Скачает и распакует [MandarinJuice](https://github.com/mi5hmash/MandarinJuice) CLI
+- Установит .NET 10 runtime при необходимости
+- Установит `save-convert.exe` и добавит в PATH
 
-## Usage
+## Использование
 
 ```
-save-convert.exe -<target_steam_id> -<save_folder_path>
+save-convert.exe -<целевой_steam_id> -<путь_к_папке_сохранений>
 ```
 
-### Example
+### Пример
 
 ```
 save-convert.exe -76561197960287930 -"C:\Users\User\AppData\Roaming\GSE Saves\3764200\remote\win64_save"
 ```
 
-### Exit codes
+### Коды возврата
 
-| Code | Meaning |
-|------|---------|
-| 0 | OK — saves are compatible or were converted successfully |
-| 1 | Error — missing tools, network error, invalid arguments |
-| 2 | Source Steam ID not found in the known list |
+| Код | Значение |
+|-----|----------|
+| 0 | OK — сейвы совместимы или успешно сконвертированы |
+| 1 | Ошибка — нет инструментов, нет сети, неверные аргументы |
+| 2 | Исходный Steam ID не найден в списке известных |
 
-### Backups
+### Резервные копии
 
-Before converting, a backup is created in the save folder:
+Перед конвертацией создаётся бэкап в папке сохранений:
 
 ```
-backup_<source_id>_<target_id>_<datetime>/
-├── info.txt          # Conversion details
-├── data00-1.bin      # Original save files
+backup_<исходный_id>_<целевой_id>_<дата_время>/
+├── info.txt          # Детали конвертации
+├── data00-1.bin      # Оригинальные файлы сохранений
 └── ...
 ```
 
-Only the 3 most recent backups are kept; older ones are deleted automatically.
+Хранятся только 3 последних бэкапа, старые удаляются автоматически.
 
-## Updating the Steam ID list
+## Обновление списка Steam ID
 
-The file `steam_ids.txt` in this repository contains known Steam IDs used by various cracks and repacks. The tool downloads it fresh from GitHub on every run.
+Файл `steam_ids.txt` в этом репозитории содержит известные Steam ID, используемые различными кряками и репаками. Утилита скачивает его с GitHub при каждом запуске.
 
-To add new IDs: edit `steam_ids.txt`, commit and push. All installations will pick up the changes automatically.
+Чтобы добавить новые ID: отредактируйте `steam_ids.txt`, сделайте commit и push. Все установки подхватят изменения автоматически.
 
-## Supported games
+## Поддерживаемые игры
 
-Any game supported by [MandarinJuice](https://github.com/mi5hmash/MandarinJuice) (Mandarin encryption / RE Engine saves):
+Любая игра, поддерживаемая [MandarinJuice](https://github.com/mi5hmash/MandarinJuice) (шифрование Mandarin / сохранения RE Engine):
 - Resident Evil Village
 - Resident Evil 9
 - Devil May Cry 5
-- Other RE Engine titles
+- Другие игры на RE Engine
 
-## Third-party
+## Сторонние компоненты
 
-This tool uses [MandarinJuice](https://github.com/mi5hmash/MandarinJuice) by [mi5hmash](https://github.com/mi5hmash) for save file decryption and re-signing.
-MandarinJuice is licensed under the [MIT License](https://github.com/mi5hmash/MandarinJuice/blob/master/LICENSE).
+Утилита использует [MandarinJuice](https://github.com/mi5hmash/MandarinJuice) от [mi5hmash](https://github.com/mi5hmash) для расшифровки и перешифровки сохранений.
+MandarinJuice распространяется под [лицензией MIT](https://github.com/mi5hmash/MandarinJuice/blob/master/LICENSE).
 
-## License
+## Лицензия
 
-MIT License — see [LICENSE](LICENSE).
+MIT License — см. [LICENSE](LICENSE).
