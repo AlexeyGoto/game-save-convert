@@ -123,6 +123,7 @@ class SaveConvert
         Log("Downloading steam_ids.txt...");
         try
         {
+            ServicePointManager.SecurityProtocol = (SecurityProtocolType)3072; // TLS 1.2
             using (WebClient wc = new WebClient())
             {
                 wc.DownloadFile(idsUrl, idsFile);
