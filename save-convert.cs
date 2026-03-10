@@ -11,8 +11,8 @@ using System.Text;
 [assembly: AssemblyCompany("AlexeyGoto")]
 [assembly: AssemblyProduct("Game Save Convert")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
 
 class SaveConvert
 {
@@ -20,8 +20,10 @@ class SaveConvert
     static string cli;
     static string profile;
     static string logFile;
+    static string lastStdout;
     static string lastStderr;
     static string idsUrl = "https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/steam_ids.txt";
+    static long STEAM64_BASE = 76561197960265728L;
 
     static void Log(string msg)
     {
@@ -37,6 +39,32 @@ class SaveConvert
         Console.Error.WriteLine("ERROR: " + msg);
         Log("ERROR: " + msg);
         Environment.Exit(code);
+    }
+
+    // Convert Steam32 to Steam64 or vice versa
+    static string ToSteam64(string id)
+    {
+        long val;
+        if (!long.TryParse(id, out val)) return id;
+        if (val < STEAM64_BASE)
+            return (val + STEAM64_BASE).ToString();
+        return id; // already Steam64
+    }
+
+    static string ToSteam32(string id)
+    {
+        long val;
+        if (!long.TryParse(id, out val)) return id;
+        if (val >= STEAM64_BASE)
+            return (val - STEAM64_BASE).ToString();
+        return id; // already Steam32
+    }
+
+    static bool IsSteam64(string id)
+    {
+        long val;
+        if (!long.TryParse(id, out val)) return false;
+        return val >= STEAM64_BASE;
     }
 
     static int Main(string[] args)
@@ -55,7 +83,6 @@ class SaveConvert
             string a = arg;
             if (a.StartsWith("-"))
                 a = a.Substring(1);
-            // Try as steam ID (all digits, any length — Steam32 can be 1-10 digits)
             if (targetId == null && IsDigits(a))
                 targetId = a;
             else if (savePath == null)
@@ -65,13 +92,19 @@ class SaveConvert
         if (targetId == null || savePath == null)
         {
             string msg = "Usage: save-convert.exe -<target_steam_id> -<save_folder_path>\n"
-                + "Example: save-convert.exe -22202 -\"C:\\path\\to\\saves\"";
+                + "Example: save-convert.exe -22202 -\"C:\\path\\to\\saves\"\n"
+                + "Steam ID can be Steam32 (short) or Steam64 (17 digits). Auto-converted.";
             Console.Error.WriteLine(msg);
             Log(msg);
             return 1;
         }
 
-        Log("Target ID: " + targetId);
+        // MandarinJuice uses Steam64 format — auto-convert
+        string targetId64 = ToSteam64(targetId);
+        string targetId32 = ToSteam32(targetId);
+        Log("Target ID (input): " + targetId);
+        Log("Target ID (Steam64): " + targetId64);
+        Log("Target ID (Steam32): " + targetId32);
         Log("Save path: " + savePath);
 
         // ===== Validate paths =====
@@ -100,7 +133,7 @@ class SaveConvert
         if (lastStderr != null && lastStderr.Contains(".NET"))
         {
             Die("MandarinJuice requires .NET runtime. Install .NET 10:\n"
-                + "  powershell -Command \"Invoke-WebRequest -Uri 'https://aka.ms/dotnet/10.0/preview/dotnet-runtime-win-x64.exe' -OutFile $env:TEMP\\dotnet10.exe; Start-Process $env:TEMP\\dotnet10.exe -ArgumentList '/install','/quiet','/norestart' -Wait\"", 1);
+                + "  powershell -Command \"irm https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/install.ps1 | iex\"", 1);
         }
         Log("MandarinJuice OK (exit code " + verifyEc + ")");
 
@@ -149,21 +182,24 @@ class SaveConvert
         if (!File.Exists(idsFile))
             Die("steam_ids.txt download failed", 1);
 
-        // ===== Read IDs =====
-        List<string> ids = new List<string>();
+        // ===== Read IDs (convert all to Steam64 for MandarinJuice, deduplicate) =====
+        List<string> ids64 = new List<string>();
+        HashSet<string> seen = new HashSet<string>();
         foreach (string line in File.ReadAllLines(idsFile))
         {
             string l = line.Trim();
             if (l.Length == 0 || l.StartsWith("#")) continue;
             if (IsDigits(l))
-                ids.Add(l);
+            {
+                string id64 = ToSteam64(l);
+                if (!seen.Contains(id64))
+                {
+                    seen.Add(id64);
+                    ids64.Add(id64);
+                }
+            }
         }
-        Log("Loaded " + ids.Count + " IDs from list");
-
-        if (!ids.Contains(targetId))
-        {
-            Log("WARNING: target ID " + targetId + " not in list, proceeding anyway");
-        }
+        Log("Loaded " + ids64.Count + " unique Steam64 IDs from list");
 
         // ===== Try target ID first (saves already compatible?) =====
         string testDir = Path.Combine(workDir, "test");
@@ -172,56 +208,52 @@ class SaveConvert
         string testFile = saveFiles[0]; // first .bin
         File.Copy(testFile, Path.Combine(testDir, Path.GetFileName(testFile)), true);
 
-        Log("Testing compatibility with target ID " + targetId + "...");
-        // Try all profiles with target ID
+        Log("Testing compatibility with target ID " + targetId64 + "...");
         foreach (string prof in profiles)
         {
             profile = prof;
-            // Reset test dir
-            foreach (string f in Directory.GetFiles(testDir))
-                File.Delete(f);
-            File.Copy(testFile, Path.Combine(testDir, Path.GetFileName(testFile)), true);
+            ResetTestDir(testDir, testFile);
 
-            if (TryDecrypt(testDir, targetId))
+            if (TryDecrypt(testDir, targetId64))
             {
                 Log("Saves already compatible with target ID (profile: " + Path.GetFileName(prof) + "). OK.");
+                Console.WriteLine("OK: Saves already compatible with target Steam ID.");
                 Cleanup(workDir);
                 return 0;
             }
         }
 
         // ===== Brute-force: try all IDs x all profiles =====
-        Log("Saves not compatible. Brute-forcing " + ids.Count + " IDs x " + profiles.Count + " profiles...");
-        string sourceId = null;
+        Log("Saves not compatible. Brute-forcing " + ids64.Count + " IDs x " + profiles.Count + " profiles...");
+        string sourceId64 = null;
+        string foundProfile = null;
         int attempt = 0;
-        int total = ids.Count * profiles.Count;
+        int total = ids64.Count * profiles.Count;
 
-        for (int i = 0; i < ids.Count; i++)
+        for (int i = 0; i < ids64.Count; i++)
         {
-            string id = ids[i];
-            if (id == targetId) continue;
+            string id = ids64[i];
+            if (id == targetId64) continue;
 
             foreach (string prof in profiles)
             {
                 profile = prof;
                 attempt++;
 
-                // Reset test dir
-                foreach (string f in Directory.GetFiles(testDir))
-                    File.Delete(f);
-                File.Copy(testFile, Path.Combine(testDir, Path.GetFileName(testFile)), true);
+                ResetTestDir(testDir, testFile);
 
                 if (TryDecrypt(testDir, id))
                 {
-                    sourceId = id;
-                    Log("Found source ID: " + sourceId + " with profile: " + Path.GetFileName(prof) + " (attempt " + attempt + "/" + total + ")");
+                    sourceId64 = id;
+                    foundProfile = prof;
+                    Log("FOUND source ID: " + sourceId64 + " (Steam32: " + ToSteam32(sourceId64) + ") with profile: " + Path.GetFileName(prof) + " (attempt " + attempt + "/" + total + ")");
                     break;
                 }
             }
-            if (sourceId != null) break;
+            if (sourceId64 != null) break;
         }
 
-        if (sourceId == null)
+        if (sourceId64 == null)
         {
             Log("Source ID not found in list");
             Console.Error.WriteLine("ERROR: Could not determine source Steam ID. Add more IDs to steam_ids.txt.");
@@ -229,9 +261,12 @@ class SaveConvert
             return 2;
         }
 
+        // Use the found profile for re-signing
+        profile = foundProfile;
+
         // ===== Create backup =====
         string backupName = string.Format("backup_{0}_{1}_{2}",
-            sourceId, targetId, DateTime.Now.ToString("yyyyMMdd_HHmmss"));
+            ToSteam32(sourceId64), targetId32, DateTime.Now.ToString("yyyyMMdd_HHmmss"));
         string backupDir = Path.Combine(savePath, backupName);
         Directory.CreateDirectory(backupDir);
 
@@ -243,8 +278,9 @@ class SaveConvert
 
         // Write info.txt
         StringBuilder info = new StringBuilder();
-        info.AppendLine("Source Steam ID: " + sourceId);
-        info.AppendLine("Target Steam ID: " + targetId);
+        info.AppendLine("Source Steam ID: " + sourceId64 + " (Steam32: " + ToSteam32(sourceId64) + ")");
+        info.AppendLine("Target Steam ID: " + targetId64 + " (Steam32: " + targetId32 + ")");
+        info.AppendLine("Profile: " + Path.GetFileName(foundProfile));
         info.AppendLine("Date: " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
         info.AppendLine("Files:");
         foreach (string f in saveFiles)
@@ -279,33 +315,51 @@ class SaveConvert
             File.Copy(f, Path.Combine(resignDir, Path.GetFileName(f)), true);
         }
 
-        Log("Re-signing: " + sourceId + " -> " + targetId);
-        int ec = RunMandarin("-m r -g \"" + profile + "\" -p \"" + resignDir + "\" -uI " + sourceId + " -uO " + targetId);
+        Log("Re-signing: " + sourceId64 + " -> " + targetId64);
+        int ec = RunMandarin("-m r -g \"" + profile + "\" -p \"" + resignDir + "\" -uI " + sourceId64 + " -uO " + targetId64);
         Log("MandarinJuice re-sign exit code: " + ec);
 
-        // Find output files
+        // Find output files — check _OUTPUT and also check stdout for success
         string outputDir = Path.Combine(resignDir, "_OUTPUT");
+        bool copied = false;
+
         if (Directory.Exists(outputDir))
         {
-            // MandarinJuice creates subfolders in _OUTPUT
             foreach (string subDir in Directory.GetDirectories(outputDir))
             {
                 foreach (string f in Directory.GetFiles(subDir, "*.bin"))
                 {
                     File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
                     Log("Copied re-signed: " + Path.GetFileName(f));
+                    copied = true;
                 }
             }
-            // Also check root of _OUTPUT
             foreach (string f in Directory.GetFiles(outputDir, "*.bin"))
             {
                 File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
                 Log("Copied re-signed: " + Path.GetFileName(f));
+                copied = true;
             }
+        }
+
+        if (!copied)
+        {
+            // Maybe MandarinJuice re-signed in-place in resignDir
+            foreach (string f in Directory.GetFiles(resignDir, "*.bin"))
+            {
+                File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
+                Log("Copied re-signed (in-place): " + Path.GetFileName(f));
+                copied = true;
+            }
+        }
+
+        if (copied)
+        {
+            Console.WriteLine("OK: Saves re-signed from " + ToSteam32(sourceId64) + " to " + targetId32 + ".");
         }
         else
         {
-            Log("WARNING: _OUTPUT directory not found after re-sign");
+            Log("WARNING: No output files found after re-sign");
             Console.Error.WriteLine("WARNING: Re-sign may have failed. Check save-convert.log.");
         }
 
@@ -314,23 +368,45 @@ class SaveConvert
         return 0;
     }
 
+    static void ResetTestDir(string testDir, string testFile)
+    {
+        foreach (string f in Directory.GetFiles(testDir))
+            File.Delete(f);
+        // Also clean _OUTPUT if leftover
+        string outDir = Path.Combine(testDir, "_OUTPUT");
+        if (Directory.Exists(outDir))
+            try { Directory.Delete(outDir, true); } catch { }
+        File.Copy(testFile, Path.Combine(testDir, Path.GetFileName(testFile)), true);
+    }
+
     static bool TryDecrypt(string dir, string steamId)
     {
         int ec = RunMandarin("-m d -g \"" + profile + "\" -p \"" + dir + "\" -u " + steamId);
-        // Check if _OUTPUT was created with files
-        string outDir = Path.Combine(dir, "_OUTPUT");
-        if (Directory.Exists(outDir))
+
+        // Method 1: Check stdout for successful decryption message
+        if (lastStdout != null && lastStdout.Contains("Decrypted the"))
+        {
+            // Clean up any output
+            string outDir = Path.Combine(dir, "_OUTPUT");
+            if (Directory.Exists(outDir))
+                try { Directory.Delete(outDir, true); } catch { }
+            return true;
+        }
+
+        // Method 2: Check if _OUTPUT was created with files (fallback)
+        string outDir2 = Path.Combine(dir, "_OUTPUT");
+        if (Directory.Exists(outDir2))
         {
             bool hasFiles = false;
-            foreach (string f in Directory.GetFiles(outDir, "*", SearchOption.AllDirectories))
+            foreach (string f in Directory.GetFiles(outDir2, "*", SearchOption.AllDirectories))
             {
                 hasFiles = true;
                 break;
             }
-            // Clean up _OUTPUT for next attempt
-            try { Directory.Delete(outDir, true); } catch { }
+            try { Directory.Delete(outDir2, true); } catch { }
             return hasFiles;
         }
+
         return false;
     }
 
@@ -354,12 +430,15 @@ class SaveConvert
             p.WaitForExit(30000);
             if (!string.IsNullOrEmpty(stdout)) Log("  stdout: " + stdout.Trim());
             if (!string.IsNullOrEmpty(stderr)) Log("  stderr: " + stderr.Trim());
+            lastStdout = stdout;
             lastStderr = stderr;
             return p.ExitCode;
         }
         catch (Exception ex)
         {
             Log("  RunMandarin exception: " + ex.Message);
+            lastStdout = null;
+            lastStderr = null;
             return -1;
         }
     }
