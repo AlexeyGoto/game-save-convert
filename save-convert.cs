@@ -331,30 +331,47 @@ class SaveConvert
         if (Directory.Exists(mandarinOutputDir))
         {
             Log("Found _OUTPUT at: " + mandarinOutputDir);
-            // Search recursively for all .bin files
-            foreach (string f in Directory.GetFiles(mandarinOutputDir, "*.bin", SearchOption.AllDirectories))
+            // Structure: _OUTPUT\<timestamp>_resigned\<targetId>\*.bin
+            // Find the newest subfolder matching targetId
+            string targetSubDir = null;
+            DateTime newest = DateTime.MinValue;
+            foreach (string dir in Directory.GetDirectories(mandarinOutputDir))
             {
-                File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
-                Log("Copied re-signed: " + Path.GetFileName(f));
-                copied = true;
+                string idDir = Path.Combine(dir, targetId64);
+                if (Directory.Exists(idDir))
+                {
+                    DateTime dt = Directory.GetCreationTime(dir);
+                    if (dt > newest)
+                    {
+                        newest = dt;
+                        targetSubDir = idDir;
+                    }
+                }
             }
-            // Clean up _OUTPUT
-            try { Directory.Delete(mandarinOutputDir, true); } catch { }
-        }
 
-        // Fallback: also check next to resignDir
-        if (!copied)
-        {
-            string resignOutputDir = Path.Combine(resignDir, "_OUTPUT");
-            if (Directory.Exists(resignOutputDir))
+            if (targetSubDir != null)
             {
-                foreach (string f in Directory.GetFiles(resignOutputDir, "*.bin", SearchOption.AllDirectories))
+                Log("Using output dir: " + targetSubDir);
+                foreach (string f in Directory.GetFiles(targetSubDir, "*.bin"))
                 {
                     File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
-                    Log("Copied re-signed (resignDir _OUTPUT): " + Path.GetFileName(f));
+                    Log("Copied re-signed: " + Path.GetFileName(f));
                     copied = true;
                 }
             }
+            else
+            {
+                // Fallback: grab any .bin recursively (pre-cleaned, so safe)
+                Log("Target subfolder not found, searching recursively...");
+                foreach (string f in Directory.GetFiles(mandarinOutputDir, "*.bin", SearchOption.AllDirectories))
+                {
+                    File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
+                    Log("Copied re-signed (recursive): " + Path.GetFileName(f));
+                    copied = true;
+                }
+            }
+            // Clean up _OUTPUT
+            try { Directory.Delete(mandarinOutputDir, true); } catch { }
         }
 
         if (copied)
