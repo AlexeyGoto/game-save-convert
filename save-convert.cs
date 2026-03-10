@@ -20,6 +20,7 @@ class SaveConvert
     static string cli;
     static string profile;
     static string logFile;
+    static string lastStderr;
     static string idsUrl = "https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/steam_ids.txt";
 
     static void Log(string msg)
@@ -77,20 +78,31 @@ class SaveConvert
         if (!File.Exists(cli))
             Die("MandarinJuice not found at " + cli + ". Run install.ps1 first.", 1);
 
-        // Find profile (first .bin in _profiles)
+        // Find all profiles in _profiles
         string profDir = Path.Combine(installDir, @"mandarin\_profiles");
         if (!Directory.Exists(profDir))
             Die("Profiles directory not found: " + profDir, 1);
 
-        profile = null;
+        List<string> profiles = new List<string>();
         foreach (string f in Directory.GetFiles(profDir, "*.bin"))
         {
-            profile = f;
-            break;
+            profiles.Add(f);
         }
-        if (profile == null)
+        if (profiles.Count == 0)
             Die("No profile .bin found in " + profDir, 1);
-        Log("Profile: " + profile);
+        Log("Found " + profiles.Count + " profiles:");
+        foreach (string p in profiles)
+            Log("  " + Path.GetFileName(p));
+
+        // ===== Verify MandarinJuice can run =====
+        Log("Verifying MandarinJuice...");
+        int verifyEc = RunMandarin("-h");
+        if (lastStderr != null && lastStderr.Contains(".NET"))
+        {
+            Die("MandarinJuice requires .NET runtime. Install .NET 10:\n"
+                + "  powershell -Command \"Invoke-WebRequest -Uri 'https://aka.ms/dotnet/10.0/preview/dotnet-runtime-win-x64.exe' -OutFile $env:TEMP\\dotnet10.exe; Start-Process $env:TEMP\\dotnet10.exe -ArgumentList '/install','/quiet','/norestart' -Wait\"", 1);
+        }
+        Log("MandarinJuice OK (exit code " + verifyEc + ")");
 
         // ===== Check save folder =====
         if (!Directory.Exists(savePath))
@@ -161,33 +173,52 @@ class SaveConvert
         File.Copy(testFile, Path.Combine(testDir, Path.GetFileName(testFile)), true);
 
         Log("Testing compatibility with target ID " + targetId + "...");
-        if (TryDecrypt(testDir, targetId))
+        // Try all profiles with target ID
+        foreach (string prof in profiles)
         {
-            Log("Saves already compatible with target ID. OK.");
-            Cleanup(workDir);
-            return 0;
+            profile = prof;
+            // Reset test dir
+            foreach (string f in Directory.GetFiles(testDir))
+                File.Delete(f);
+            File.Copy(testFile, Path.Combine(testDir, Path.GetFileName(testFile)), true);
+
+            if (TryDecrypt(testDir, targetId))
+            {
+                Log("Saves already compatible with target ID (profile: " + Path.GetFileName(prof) + "). OK.");
+                Cleanup(workDir);
+                return 0;
+            }
         }
 
-        // ===== Brute-force: try all IDs =====
-        Log("Saves not compatible. Brute-forcing " + ids.Count + " IDs...");
+        // ===== Brute-force: try all IDs x all profiles =====
+        Log("Saves not compatible. Brute-forcing " + ids.Count + " IDs x " + profiles.Count + " profiles...");
         string sourceId = null;
+        int attempt = 0;
+        int total = ids.Count * profiles.Count;
 
         for (int i = 0; i < ids.Count; i++)
         {
             string id = ids[i];
             if (id == targetId) continue;
 
-            // Reset test dir
-            foreach (string f in Directory.GetFiles(testDir))
-                File.Delete(f);
-            File.Copy(testFile, Path.Combine(testDir, Path.GetFileName(testFile)), true);
-
-            if (TryDecrypt(testDir, id))
+            foreach (string prof in profiles)
             {
-                sourceId = id;
-                Log("Found source ID: " + sourceId + " (attempt " + (i + 1) + "/" + ids.Count + ")");
-                break;
+                profile = prof;
+                attempt++;
+
+                // Reset test dir
+                foreach (string f in Directory.GetFiles(testDir))
+                    File.Delete(f);
+                File.Copy(testFile, Path.Combine(testDir, Path.GetFileName(testFile)), true);
+
+                if (TryDecrypt(testDir, id))
+                {
+                    sourceId = id;
+                    Log("Found source ID: " + sourceId + " with profile: " + Path.GetFileName(prof) + " (attempt " + attempt + "/" + total + ")");
+                    break;
+                }
             }
+            if (sourceId != null) break;
         }
 
         if (sourceId == null)
@@ -323,6 +354,7 @@ class SaveConvert
             p.WaitForExit(30000);
             if (!string.IsNullOrEmpty(stdout)) Log("  stdout: " + stdout.Trim());
             if (!string.IsNullOrEmpty(stderr)) Log("  stderr: " + stderr.Trim());
+            lastStderr = stderr;
             return p.ExitCode;
         }
         catch (Exception ex)
