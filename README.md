@@ -28,14 +28,36 @@ irm https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/install.
 ## Использование
 
 ```
-save-convert.exe -<целевой_steam_id> -<путь_к_папке_сохранений>
+save-convert.exe -<steam_id> -<путь_к_папке_сохранений> [-<игра>]
 ```
+
+### Параметры
+
+| Параметр | Описание |
+|----------|----------|
+| `steam_id` | Целевой Steam ID (Steam32 или Steam64 — конвертируется автоматически) |
+| `путь` | Путь к папке с сохранениями (.bin файлы) |
+| `игра` | *(необязательно)* Фильтр профиля игры — ускоряет перебор |
+
+### Сокращения игр
+
+| Сокращение | Игра |
+|------------|------|
+| `re9`, `re` | Resident Evil 9 Requiem |
+| `mhw`, `mh` | Monster Hunter Wilds |
+| `dd2`, `dd` | Dragon's Dogma 2 |
+| `dr` | Dead Rising |
+| `kg` | Kunitsu-Gami |
+
+Также можно указать любую часть названия профиля, например `-"Resident Evil"`.
 
 ### Пример
 
 ```
-save-convert.exe -76561197960287930 -"C:\Users\User\AppData\Roaming\GSE Saves\3764200\remote\win64_save"
+save-convert.exe -22202 -"C:\Users\User\AppData\Roaming\GSE Saves\3764200\remote\win64_save" -re9
 ```
+
+Steam ID `22202` (Steam32) автоматически конвертируется в `76561197960287930` (Steam64).
 
 ### Коды возврата
 
@@ -66,11 +88,12 @@ backup_<исходный_id>_<целевой_id>_<дата_время>/
 
 ## Поддерживаемые игры
 
-Любая игра, поддерживаемая [MandarinJuice](https://github.com/mi5hmash/MandarinJuice) (шифрование Mandarin / сохранения RE Engine):
-- Resident Evil Village
-- Resident Evil 9
-- Devil May Cry 5
-- Другие игры на RE Engine
+Любая игра, поддерживаемая [MandarinJuice](https://github.com/mi5hmash/MandarinJuice):
+- Resident Evil 9 Requiem
+- Monster Hunter Wilds
+- Dragon's Dogma 2
+- Dead Rising
+- Kunitsu-Gami
 
 ## Сторонние компоненты
 

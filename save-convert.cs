@@ -11,8 +11,8 @@ using System.Text;
 [assembly: AssemblyCompany("AlexeyGoto")]
 [assembly: AssemblyProduct("Game Save Convert")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
-[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.4.0.0")]
+[assembly: AssemblyVersion("1.4.0.0")]
 
 class SaveConvert
 {
@@ -77,6 +77,7 @@ class SaveConvert
         // ===== Parse arguments =====
         string targetId = null;
         string savePath = null;
+        string gameFilter = null;
 
         foreach (string arg in args)
         {
@@ -85,15 +86,18 @@ class SaveConvert
                 a = a.Substring(1);
             if (targetId == null && IsDigits(a))
                 targetId = a;
-            else if (savePath == null)
+            else if (savePath == null && (a.Contains("\\") || a.Contains("/") || a.Contains(":")))
                 savePath = a;
+            else if (gameFilter == null && a.Length > 0)
+                gameFilter = a;
         }
 
         if (targetId == null || savePath == null)
         {
-            string msg = "Usage: save-convert.exe -<target_steam_id> -<save_folder_path>\n"
-                + "Example: save-convert.exe -22202 -\"C:\\path\\to\\saves\"\n"
-                + "Steam ID can be Steam32 (short) or Steam64 (17 digits). Auto-converted.";
+            string msg = "Usage: save-convert.exe -<steam_id> -<save_path> [-<game>]\n"
+                + "Example: save-convert.exe -22202 -\"C:\\path\\to\\saves\" -re9\n"
+                + "Game shortcuts: re9, mhw, dd2, dr, kg\n"
+                + "Steam ID: Steam32 or Steam64, auto-converted.";
             Console.Error.WriteLine(msg);
             Log(msg);
             return 1;
@@ -123,7 +127,29 @@ class SaveConvert
         }
         if (profiles.Count == 0)
             Die("No profile .bin found in " + profDir, 1);
-        Log("Found " + profiles.Count + " profiles:");
+
+        // Filter profiles by game name if specified
+        if (gameFilter != null)
+        {
+            string search = ResolveGameAlias(gameFilter);
+            List<string> filtered = new List<string>();
+            foreach (string p in profiles)
+            {
+                if (Path.GetFileName(p).IndexOf(search, StringComparison.OrdinalIgnoreCase) >= 0)
+                    filtered.Add(p);
+            }
+            if (filtered.Count == 0)
+            {
+                string available = "";
+                foreach (string p in profiles)
+                    available += (available.Length > 0 ? ", " : "") + Path.GetFileName(p);
+                Die("No profile matching '" + gameFilter + "'. Available: " + available, 1);
+            }
+            profiles = filtered;
+            Log("Game filter '" + gameFilter + "' -> '" + search + "'");
+        }
+
+        Log("Using " + profiles.Count + " profile(s):");
         foreach (string p in profiles)
             Log("  " + Path.GetFileName(p));
 
@@ -223,8 +249,9 @@ class SaveConvert
             }
         }
 
-        // ===== Brute-force: try all IDs x all profiles =====
-        Log("Saves not compatible. Brute-forcing " + ids64.Count + " IDs x " + profiles.Count + " profiles...");
+        // ===== Brute-force: try all IDs x all profiles (only 1 test file) =====
+        Log("Brute-forcing " + ids64.Count + " IDs x " + profiles.Count + " profile(s) = " + (ids64.Count * profiles.Count) + " combinations...");
+        Console.Write("Searching source ID: 0/" + ids64.Count + " IDs...");
         string sourceId64 = null;
         string foundProfile = null;
         int attempt = 0;
@@ -234,6 +261,8 @@ class SaveConvert
         {
             string id = ids64[i];
             if (id == targetId64) continue;
+
+            Console.Write("\rSearching source ID: " + (i + 1) + "/" + ids64.Count + " IDs...");
 
             foreach (string prof in profiles)
             {
@@ -252,6 +281,7 @@ class SaveConvert
             }
             if (sourceId64 != null) break;
         }
+        Console.WriteLine();
 
         if (sourceId64 == null)
         {
@@ -465,6 +495,17 @@ class SaveConvert
             lastStderr = null;
             return -1;
         }
+    }
+
+    static string ResolveGameAlias(string filter)
+    {
+        string f = filter.ToLowerInvariant();
+        if (f == "re9" || f == "re" || f == "rev") return "Resident Evil";
+        if (f == "mhw" || f == "mh") return "Monster Hunter";
+        if (f == "dd2" || f == "dd") return "Dragon's Dogma";
+        if (f == "dr") return "Dead Rising";
+        if (f == "kg") return "Kunitsu";
+        return filter; // use as-is for partial match
     }
 
     static bool IsDigits(string s)
