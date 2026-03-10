@@ -315,41 +315,45 @@ class SaveConvert
             File.Copy(f, Path.Combine(resignDir, Path.GetFileName(f)), true);
         }
 
+        // Clean up any previous _OUTPUT in mandarin dir
+        string mandarinOutputDir = Path.Combine(installDir, @"mandarin\_OUTPUT");
+        if (Directory.Exists(mandarinOutputDir))
+            try { Directory.Delete(mandarinOutputDir, true); } catch { }
+
         Log("Re-signing: " + sourceId64 + " -> " + targetId64);
         int ec = RunMandarin("-m r -g \"" + profile + "\" -p \"" + resignDir + "\" -uI " + sourceId64 + " -uO " + targetId64);
         Log("MandarinJuice re-sign exit code: " + ec);
 
-        // Find output files — check _OUTPUT and also check stdout for success
-        string outputDir = Path.Combine(resignDir, "_OUTPUT");
+        // MandarinJuice creates _OUTPUT next to its exe:
+        // <mandarin_dir>\_OUTPUT\<timestamp>_resigned\<targetId>\*.bin
         bool copied = false;
 
-        if (Directory.Exists(outputDir))
+        if (Directory.Exists(mandarinOutputDir))
         {
-            foreach (string subDir in Directory.GetDirectories(outputDir))
-            {
-                foreach (string f in Directory.GetFiles(subDir, "*.bin"))
-                {
-                    File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
-                    Log("Copied re-signed: " + Path.GetFileName(f));
-                    copied = true;
-                }
-            }
-            foreach (string f in Directory.GetFiles(outputDir, "*.bin"))
+            Log("Found _OUTPUT at: " + mandarinOutputDir);
+            // Search recursively for all .bin files
+            foreach (string f in Directory.GetFiles(mandarinOutputDir, "*.bin", SearchOption.AllDirectories))
             {
                 File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
                 Log("Copied re-signed: " + Path.GetFileName(f));
                 copied = true;
             }
+            // Clean up _OUTPUT
+            try { Directory.Delete(mandarinOutputDir, true); } catch { }
         }
 
+        // Fallback: also check next to resignDir
         if (!copied)
         {
-            // Maybe MandarinJuice re-signed in-place in resignDir
-            foreach (string f in Directory.GetFiles(resignDir, "*.bin"))
+            string resignOutputDir = Path.Combine(resignDir, "_OUTPUT");
+            if (Directory.Exists(resignOutputDir))
             {
-                File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
-                Log("Copied re-signed (in-place): " + Path.GetFileName(f));
-                copied = true;
+                foreach (string f in Directory.GetFiles(resignOutputDir, "*.bin", SearchOption.AllDirectories))
+                {
+                    File.Copy(f, Path.Combine(savePath, Path.GetFileName(f)), true);
+                    Log("Copied re-signed (resignDir _OUTPUT): " + Path.GetFileName(f));
+                    copied = true;
+                }
             }
         }
 
@@ -359,7 +363,7 @@ class SaveConvert
         }
         else
         {
-            Log("WARNING: No output files found after re-sign");
+            Log("WARNING: No re-signed files found in _OUTPUT");
             Console.Error.WriteLine("WARNING: Re-sign may have failed. Check save-convert.log.");
         }
 
@@ -381,29 +385,32 @@ class SaveConvert
 
     static bool TryDecrypt(string dir, string steamId)
     {
+        // Clean any previous _OUTPUT
+        string mandarinOutput = Path.Combine(installDir, @"mandarin\_OUTPUT");
+        if (Directory.Exists(mandarinOutput))
+            try { Directory.Delete(mandarinOutput, true); } catch { }
+
         int ec = RunMandarin("-m d -g \"" + profile + "\" -p \"" + dir + "\" -u " + steamId);
 
         // Method 1: Check stdout for successful decryption message
         if (lastStdout != null && lastStdout.Contains("Decrypted the"))
         {
-            // Clean up any output
-            string outDir = Path.Combine(dir, "_OUTPUT");
-            if (Directory.Exists(outDir))
-                try { Directory.Delete(outDir, true); } catch { }
+            // Clean up _OUTPUT wherever it was created
+            if (Directory.Exists(mandarinOutput))
+                try { Directory.Delete(mandarinOutput, true); } catch { }
             return true;
         }
 
-        // Method 2: Check if _OUTPUT was created with files (fallback)
-        string outDir2 = Path.Combine(dir, "_OUTPUT");
-        if (Directory.Exists(outDir2))
+        // Method 2: Check if _OUTPUT was created (next to mandarin exe)
+        if (Directory.Exists(mandarinOutput))
         {
             bool hasFiles = false;
-            foreach (string f in Directory.GetFiles(outDir2, "*", SearchOption.AllDirectories))
+            foreach (string f in Directory.GetFiles(mandarinOutput, "*", SearchOption.AllDirectories))
             {
                 hasFiles = true;
                 break;
             }
-            try { Directory.Delete(outDir2, true); } catch { }
+            try { Directory.Delete(mandarinOutput, true); } catch { }
             return hasFiles;
         }
 
