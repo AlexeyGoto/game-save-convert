@@ -8,7 +8,6 @@ $MandarinDir = "$InstallDir\mandarin"
 $CLI = "$MandarinDir\mandarin-juice-cli.exe"
 $MandarinZipUrl = "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.0.0/win-x64_v1.0.0.zip"
 $ProfilesZipUrl = "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.0.0/_profiles.zip"
-$DotnetUrl = "https://aka.ms/dotnet/10.0/preview/dotnet-runtime-win-x64.exe"
 $RepoBase = "https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main"
 
 Write-Host "===== Game Save Convert — Installer =====" -ForegroundColor Cyan
@@ -64,63 +63,36 @@ if (-not (Test-Path $CLI)) {
     Write-Host "[1-3/5] MandarinJuice already installed, skipping."
 }
 
-# ===== 3. Check .NET 10 runtime =====
+# ===== 3. Install .NET 10 runtime =====
 Write-Progress -Activity "Installing" -Status "Checking .NET runtime..." -PercentComplete 50
-Write-Host "[4/5] Checking .NET 10 runtime..."
+Write-Host "[4/5] Installing .NET 10 runtime..."
 
+# Use official dotnet-install.ps1 script — most reliable method
+$dotnetInstallScript = "$env:TEMP\dotnet-install.ps1"
+Write-Host "       Downloading dotnet-install.ps1..."
+Invoke-WebRequest -Uri "https://dot.net/v1/dotnet-install.ps1" -OutFile $dotnetInstallScript -UseBasicParsing
+
+if (Test-Path $dotnetInstallScript) {
+    Write-Progress -Activity "Installing" -Status "Installing .NET 10 runtime..." -PercentComplete 65
+    Write-Host "       Running dotnet-install.ps1 (channel 10.0)..."
+    & $dotnetInstallScript -Channel 10.0 -Runtime dotnet -InstallDir "C:\Program Files\dotnet" -NoPath
+    Remove-Item $dotnetInstallScript -Force -ErrorAction SilentlyContinue
+} else {
+    Write-Warning "Failed to download dotnet-install.ps1"
+}
+
+# Verify MandarinJuice can run
 $dotnetOk = $false
 try {
     $proc = Start-Process -FilePath $CLI -ArgumentList "-h" -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$env:TEMP\_mj_test.txt" -RedirectStandardError "$env:TEMP\_mj_err.txt" 2>$null
     if ($proc.ExitCode -le 1) { $dotnetOk = $true }
 } catch {}
-
-if (-not $dotnetOk) {
-    Write-Host "       .NET 10 not found, checking for RC versions..."
-    $dotnetBase = "C:\Program Files\dotnet\shared\Microsoft.NETCore.App"
-    $stablePath = "$dotnetBase\10.0.0"
-
-    if (-not (Test-Path $stablePath)) {
-        # Try symlink from RC
-        $rcDir = Get-ChildItem $dotnetBase -Directory -Filter "10.0.0-*" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($rcDir) {
-            Write-Host "       Found $($rcDir.Name), creating symlink..."
-            cmd /c mklink /D "$stablePath" "$($rcDir.FullName)" 2>$null | Out-Null
-        } else {
-            # Download and install
-            Write-Host "       Downloading .NET 10 runtime..."
-            Write-Progress -Activity "Installing" -Status "Downloading .NET 10 runtime..." -PercentComplete 60
-            $dotnetExe = "$env:TEMP\dotnet10_runtime.exe"
-            Invoke-WebRequest -Uri $DotnetUrl -OutFile $dotnetExe -UseBasicParsing
-            if (Test-Path $dotnetExe) {
-                Write-Host "       Installing .NET 10 runtime..."
-                Write-Progress -Activity "Installing" -Status "Installing .NET 10 runtime..." -PercentComplete 70
-                Start-Process -FilePath $dotnetExe -ArgumentList "/install /quiet /norestart" -Wait
-                Remove-Item $dotnetExe -Force -ErrorAction SilentlyContinue
-                # Retry symlink
-                $rcDir = Get-ChildItem $dotnetBase -Directory -Filter "10.0.0-*" -ErrorAction SilentlyContinue | Select-Object -First 1
-                if ($rcDir -and -not (Test-Path $stablePath)) {
-                    cmd /c mklink /D "$stablePath" "$($rcDir.FullName)" 2>$null | Out-Null
-                }
-            } else {
-                Write-Warning "Failed to download .NET 10 runtime. Install manually."
-            }
-        }
-    }
-
-    # Verify
-    try {
-        $proc = Start-Process -FilePath $CLI -ArgumentList "-h" -NoNewWindow -Wait -PassThru -RedirectStandardOutput "$env:TEMP\_mj_test.txt" -RedirectStandardError "$env:TEMP\_mj_err.txt" 2>$null
-        if ($proc.ExitCode -le 1) { $dotnetOk = $true }
-    } catch {}
-}
-
 Remove-Item "$env:TEMP\_mj_test.txt", "$env:TEMP\_mj_err.txt" -Force -ErrorAction SilentlyContinue
 
 if ($dotnetOk) {
-    Write-Host "       .NET runtime OK"
+    Write-Host "       .NET runtime OK — MandarinJuice verified"
 } else {
-    Write-Warning ".NET 10 runtime not working. MandarinJuice may not function."
-    Write-Warning "Install .NET 10 manually: https://dotnet.microsoft.com/download/dotnet/10.0"
+    Write-Warning ".NET 10 runtime not working. Try: winget install Microsoft.DotNet.Runtime.10"
 }
 
 # ===== 4. Download save-convert.exe and steam_ids.txt =====
