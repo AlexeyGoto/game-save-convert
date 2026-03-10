@@ -54,8 +54,8 @@ class SaveConvert
             string a = arg;
             if (a.StartsWith("-"))
                 a = a.Substring(1);
-            // Try as steam ID (all digits, 17 chars)
-            if (targetId == null && a.Length >= 15 && IsDigits(a))
+            // Try as steam ID (all digits, any length — Steam32 can be 1-10 digits)
+            if (targetId == null && IsDigits(a))
                 targetId = a;
             else if (savePath == null)
                 savePath = a;
@@ -63,8 +63,10 @@ class SaveConvert
 
         if (targetId == null || savePath == null)
         {
-            Console.Error.WriteLine("Usage: save-convert.exe -<target_steam_id> -<save_folder_path>");
-            Console.Error.WriteLine("Example: save-convert.exe -76561197960287930 -\"C:\\path\\to\\saves\"");
+            string msg = "Usage: save-convert.exe -<target_steam_id> -<save_folder_path>\n"
+                + "Example: save-convert.exe -22202 -\"C:\\path\\to\\saves\"";
+            Console.Error.WriteLine(msg);
+            Log(msg);
             return 1;
         }
 
