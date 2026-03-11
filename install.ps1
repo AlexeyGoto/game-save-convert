@@ -95,20 +95,22 @@ if ($dotnetOk) {
     Write-Warning ".NET 10 runtime not working. Try: winget install Microsoft.DotNet.Runtime.10"
 }
 
-# ===== 4. Download save-convert.exe and steam_ids.txt =====
+# ===== 4. Download save-convert.exe and README =====
 Write-Progress -Activity "Installing" -Status "Downloading save-convert..." -PercentComplete 85
 Write-Host "[5/5] Downloading save-convert.exe..."
 
-# steam_ids.txt
-Invoke-WebRequest -Uri "$RepoBase/steam_ids.txt" -OutFile "$InstallDir\steam_ids.txt" -UseBasicParsing
-
-# save-convert.exe (from GitHub releases or raw)
+# save-convert.exe (from GitHub releases)
 $exeUrl = "https://github.com/AlexeyGoto/game-save-convert/releases/latest/download/save-convert.exe"
 try {
     Invoke-WebRequest -Uri $exeUrl -OutFile "$InstallDir\save-convert.exe" -UseBasicParsing
 } catch {
     Write-Warning "save-convert.exe not found in releases. Build from source or add manually."
 }
+
+# README
+try {
+    Invoke-WebRequest -Uri "$RepoBase/README.md" -OutFile "$InstallDir\README.md" -UseBasicParsing
+} catch {}
 
 # ===== 5. Add to PATH =====
 Write-Progress -Activity "Installing" -Status "Configuring PATH..." -PercentComplete 95
@@ -125,7 +127,15 @@ Write-Host ""
 Write-Host "===== Installation Complete =====" -ForegroundColor Green
 Write-Host "  Install dir:  $InstallDir"
 Write-Host "  MandarinJuice: $CLI"
-Write-Host "  Usage: save-convert.exe -<steam_id> -<save_path>"
+Write-Host "  Usage: save-convert.exe -<steam_id> -<save_path> [-<game>]"
+Write-Host "  Game shortcuts: re9, mhw, dd2, dr, kg"
 Write-Host ""
 Write-Host "  NOTE: Restart terminal for PATH changes to take effect." -ForegroundColor Yellow
 Write-Host ""
+
+# Open README with instructions
+$readmePath = "$InstallDir\README.md"
+if (Test-Path $readmePath) {
+    Write-Host "Opening README..." -ForegroundColor Cyan
+    Start-Process $readmePath
+}
