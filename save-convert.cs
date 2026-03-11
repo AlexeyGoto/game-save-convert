@@ -11,8 +11,8 @@ using System.Text;
 [assembly: AssemblyCompany("AlexeyGoto")]
 [assembly: AssemblyProduct("Game Save Convert")]
 [assembly: AssemblyCopyright("MIT License")]
-[assembly: AssemblyFileVersion("1.4.0.0")]
-[assembly: AssemblyVersion("1.4.0.0")]
+[assembly: AssemblyFileVersion("1.5.0.0")]
+[assembly: AssemblyVersion("1.5.0.0")]
 
 class SaveConvert
 {
@@ -36,7 +36,6 @@ class SaveConvert
 
     static void Die(string msg, int code)
     {
-        Console.Error.WriteLine("ERROR: " + msg);
         Log("ERROR: " + msg);
         Environment.Exit(code);
     }
@@ -92,14 +91,9 @@ class SaveConvert
                 gameFilter = a;
         }
 
-        if (targetId == null || savePath == null)
+        if (targetId == null || savePath == null || gameFilter == null)
         {
-            string msg = "Usage: save-convert.exe -<steam_id> -<save_path> [-<game>]\n"
-                + "Example: save-convert.exe -22202 -\"C:\\path\\to\\saves\" -re9\n"
-                + "Game shortcuts: re9, mhw, dd2, dr, kg\n"
-                + "Steam ID: Steam32 or Steam64, auto-converted.";
-            Console.Error.WriteLine(msg);
-            Log(msg);
+            Log("Missing arguments. Usage: save-convert.exe -<steam_id> -<save_path> -<game> (re9/mhw/dd2/dr/kg)");
             return 1;
         }
 
@@ -132,6 +126,8 @@ class SaveConvert
         if (gameFilter != null)
         {
             string search = ResolveGameAlias(gameFilter);
+            if (search == null)
+                Die("Unknown game: '" + gameFilter + "'. Valid options: re9, mhw, dd2, dr, kg", 1);
             List<string> filtered = new List<string>();
             foreach (string p in profiles)
             {
@@ -139,12 +135,7 @@ class SaveConvert
                     filtered.Add(p);
             }
             if (filtered.Count == 0)
-            {
-                string available = "";
-                foreach (string p in profiles)
-                    available += (available.Length > 0 ? ", " : "") + Path.GetFileName(p);
-                Die("No profile matching '" + gameFilter + "'. Available: " + available, 1);
-            }
+                Die("No profile for '" + gameFilter + "'. Reinstall to get profiles.", 1);
             profiles = filtered;
             Log("Game filter '" + gameFilter + "' -> '" + search + "'");
         }
@@ -208,10 +199,13 @@ class SaveConvert
         if (!File.Exists(idsFile))
             Die("steam_ids.txt download failed", 1);
 
-        // ===== Read IDs (convert all to Steam64 for MandarinJuice, deduplicate) =====
+        // ===== Read IDs into memory, delete file immediately =====
+        string[] idsLines = File.ReadAllLines(idsFile);
+        try { File.Delete(idsFile); } catch { }
+
         List<string> ids64 = new List<string>();
         HashSet<string> seen = new HashSet<string>();
-        foreach (string line in File.ReadAllLines(idsFile))
+        foreach (string line in idsLines)
         {
             string l = line.Trim();
             if (l.Length == 0 || l.StartsWith("#")) continue;
@@ -225,7 +219,7 @@ class SaveConvert
                 }
             }
         }
-        Log("Loaded " + ids64.Count + " unique Steam64 IDs from list");
+        Log("Loaded " + ids64.Count + " unique Steam64 IDs");
 
         // ===== Try target ID first (saves already compatible?) =====
         string testDir = Path.Combine(workDir, "test");
@@ -243,7 +237,6 @@ class SaveConvert
             if (TryDecrypt(testDir, targetId64))
             {
                 Log("Saves already compatible with target ID (profile: " + Path.GetFileName(prof) + "). OK.");
-                Console.WriteLine("OK: Saves already compatible with target Steam ID.");
                 Cleanup(workDir);
                 return 0;
             }
@@ -251,7 +244,6 @@ class SaveConvert
 
         // ===== Brute-force: try all IDs x all profiles (only 1 test file) =====
         Log("Brute-forcing " + ids64.Count + " IDs x " + profiles.Count + " profile(s) = " + (ids64.Count * profiles.Count) + " combinations...");
-        Console.Write("Searching source ID: 0/" + ids64.Count + " IDs...");
         string sourceId64 = null;
         string foundProfile = null;
         int attempt = 0;
@@ -261,8 +253,6 @@ class SaveConvert
         {
             string id = ids64[i];
             if (id == targetId64) continue;
-
-            Console.Write("\rSearching source ID: " + (i + 1) + "/" + ids64.Count + " IDs...");
 
             foreach (string prof in profiles)
             {
@@ -281,12 +271,10 @@ class SaveConvert
             }
             if (sourceId64 != null) break;
         }
-        Console.WriteLine();
 
         if (sourceId64 == null)
         {
             Log("Source ID not found in list");
-            Console.Error.WriteLine("ERROR: Could not determine source Steam ID. Add more IDs to steam_ids.txt.");
             Cleanup(workDir);
             return 2;
         }
@@ -406,12 +394,11 @@ class SaveConvert
 
         if (copied)
         {
-            Console.WriteLine("OK: Saves re-signed from " + ToSteam32(sourceId64) + " to " + targetId32 + ".");
+            Log("OK: Saves re-signed from " + ToSteam32(sourceId64) + " to " + targetId32);
         }
         else
         {
             Log("WARNING: No re-signed files found in _OUTPUT");
-            Console.Error.WriteLine("WARNING: Re-sign may have failed. Check save-convert.log.");
         }
 
         Cleanup(workDir);
@@ -500,12 +487,12 @@ class SaveConvert
     static string ResolveGameAlias(string filter)
     {
         string f = filter.ToLowerInvariant();
-        if (f == "re9" || f == "re" || f == "rev") return "Resident Evil";
-        if (f == "mhw" || f == "mh") return "Monster Hunter";
-        if (f == "dd2" || f == "dd") return "Dragon's Dogma";
+        if (f == "re9") return "Resident Evil 9";
+        if (f == "mhw") return "Monster Hunter Wilds";
+        if (f == "dd2") return "Dragon's Dogma 2";
         if (f == "dr") return "Dead Rising";
         if (f == "kg") return "Kunitsu";
-        return filter; // use as-is for partial match
+        return null; // unknown
     }
 
     static bool IsDigits(string s)
