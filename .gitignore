@@ -3,3 +3,10 @@
 *.cs
 *.zip
 *.mhtml
+
+# Build directories
+save-convert/
+save-brute/
+bin/
+obj/
+publish/

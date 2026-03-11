@@ -1,220 +1,174 @@
-# Техническая документация — Game Save Convert
+# Техническая документация — Game Save Convert v2.0
 
 ## Архитектура
 
-Проект состоит из двух исполняемых файлов:
+Единое .NET 10 приложение. MandarinJuiceCore используется как библиотека напрямую (без внешних CLI-процессов).
 
-| Файл | Назначение | Исходник |
-|------|-----------|----------|
-| `save-convert.exe` | Основная утилита конвертации | `save-convert.cs` |
-| `installer.exe` | GUI-установщик | `installer.cs` |
+| Файл | Назначение | Runtime |
+|------|-----------|---------|
+| `save-convert.exe` | Основная утилита (+ встроенный brute-force) | .NET 10 |
+| `installer.exe` | GUI-установщик | .NET Framework 4.x |
 
-Оба компилируются через .NET Framework 4.x (`csc.exe`), не требуют SDK.
+### Компоненты save-convert
 
-## Компоненты системы
+| Файл | Назначение |
+|------|-----------|
+| `Program.cs` | Точка входа, CLI-аргументы, оркестрация |
+| `BruteForce.cs` | HeaderKey pre-filter + полный перебор |
+| `SaveOperations.cs` | Decrypt/Encrypt/Re-sign через MandarinJuiceCore |
+| `SteamIds.cs` | Загрузка и парсинг steam_ids.txt |
+| `ProgressForm.cs` | WinForms окно прогресса brute-force |
+| `IdReporter.cs` | Отправка найденных ID в Google Forms |
 
-### save-convert.exe
-
-Консольное приложение (скомпилировано как `/target:winexe` — без окна консоли). Запускается с аргументами командной строки, работает полностью автоматически.
-
-**Зависимости runtime:**
-- .NET Framework 4.x (встроен в Windows)
-- `user32.dll` (P/Invoke для MessageBox)
-- MandarinJuice CLI (внешний инструмент, `.NET 10 runtime`)
-
-### installer.exe
-
-WinForms-приложение. Автоматически запрашивает права администратора (UAC). Скачивает и устанавливает все зависимости.
-
-**Зависимости runtime:**
-- .NET Framework 4.x
-- System.Windows.Forms, System.Drawing
-- System.IO.Compression (распаковка ZIP)
-- Доступ к интернету (GitHub)
-
-### MandarinJuice CLI
-
-Сторонний инструмент от [mi5hmash](https://github.com/mi5hmash/MandarinJuice). Выполняет фактическую расшифровку/шифрование сохранений.
-
-**Режимы использования:**
-- Decrypt: `-m d -g <profile> -p <dir> -u <steam_id>`
-- Re-sign: `-m r -g <profile> -p <dir> -uI <source_id> -uO <target_id>`
-- Help: `-h`
-
-**Выходные данные:** создаёт папку `_OUTPUT` рядом со своим exe.
-
-## Алгоритм работы save-convert.exe
+## Алгоритм работы
 
 ```
 1. Парсинг аргументов (steam_id, путь, игра)
-2. Конвертация Steam ID в формат Steam64
-3. Валидация путей (MandarinJuice, профили, папка сейвов)
-4. Загрузка steam_ids.txt в память (HTTP GET → строка)
-5. Проверка целевого ID по авторизованному списку
-   └─ Если нет → MessageBox "несовместимы" → exit 3
-6. Тест: расшифровка первого .bin файла целевым ID (во временной папке)
-   └─ Если успех → сейвы уже совместимы, ничего не меняем → exit 0
-7. Перебор: все ID × профиль указанной игры (brute-force)
-   └─ Если найден → sourceId определён
-   └─ Если не найден → MessageBox "несовместимы" → exit 2
-8. Создание бэкапа (backup_<src>_<dst>_<timestamp>/)
-9. Удаление старых бэкапов (оставить 3)
-10. Re-sign: MandarinJuice перешифровывает все .bin
-11. Копирование результата из _OUTPUT обратно в папку сейвов
-12. Очистка временных файлов → exit 0
+2. Загрузка профилей из C:\Tools\SaveCompat\mandarin\_profiles\*.bin
+3. Фильтрация по игре (ResolveGameAlias: re9, mhw, dd2, dr, kg)
+4. Проверка папки сохранений (нет файлов → exit 0)
+5. Загрузка steam_ids.txt (HTTP GET в память)
+6. Проверка targetId в авторизованном списке (нет → MessageBox + exit 3)
+7. Тест: расшифровка testFile с targetId (MandarinJuiceCore напрямую)
+   └─ Если успех → сейвы уже совместимы → exit 0
+8. Поиск по списку: HeaderKey pre-filter для каждого ID
+   └─ Мгновенно (~1мс на все ID из списка)
+9. Если не найден → ProgressForm + полный brute-force (0..4.3B)
+   └─ ~18M ID/sec, ~4 мин максимум
+10. IdReporter.Report(id) — отправка в Google Forms
+11. Backup → Re-sign всех файлов → exit 0
 ```
+
+**Exit codes:** 0=успех, 1=ошибка, 2=не найден, 3=целевой ID не авторизован
+
+## BruteForce — HeaderKey Pre-filter
+
+Ключевая оптимизация v2.0. Вместо полной расшифровки каждого файла (~2300 ID/sec), используется проверка по HeaderKey (~18M ID/sec).
+
+### Принцип
+
+MandarinDeencryptor генерирует 64-байтный HeaderKey из userId через SplitMix64. Этот ключ XOR-ится с заголовком файла. Зная исходный заголовок (он фиксирован — `0x00` байты), можно предсказать первые 64 байта зашифрованного файла для любого userId.
+
+### Алгоритм
+
+1. Извлечь `HeaderKey` через reflection из `MandarinDeencryptor`
+2. Для тестового файла: предвычислить `stateAfterQueue` и `expectedXorBytes` (64 байта)
+3. Для каждого кандидатного ID:
+   - 16 вызовов SplitMix64 (unrolled) → 8 байт каждый → 128 байт → берём первые 64
+   - Побайтовое сравнение с `expectedXorBytes`
+   - 99.6% отсеиваются по первому байту
+4. Если pre-filter пройден → полная верификация через `MandarinDeencryptor.DecryptData`
+
+### ParseVariant
+
+| Значение | Формула | Игры |
+|----------|---------|------|
+| 0 | `steam64` | — |
+| 1 | `~accountId \| 0xFFFFFFFF00000000` | — |
+| 2 | `~steam64` | RE9 |
+| 3 | `~obfuscated(steam64)` | — |
 
 ## steam_ids.txt
 
-Текстовый файл с известными Steam ID. Хранится в репозитории, загружается в runtime через HTTP.
+**URL:** `https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/steam_ids.txt`
 
 **Формат:**
 ```
 # Комментарий
 22202                    # Steam32
-76561197960287930         # Steam64 (то же самое)
+76561197960287930         # Steam64
+1 915 550 405            # С пробелами — допустимо
 ```
 
-- Одна строка = один ID
 - Строки с `#` — комментарии
-- Поддерживаются оба формата (Steam32 и Steam64)
-- При загрузке все ID нормализуются в Steam64
-- Дубликаты автоматически удаляются через HashSet
+- Пробелы в числах удаляются автоматически
+- Оба формата (Steam32 и Steam64) поддерживаются
+- При загрузке нормализуются в Steam64, дедупликация через HashSet
 
-**Конвертация:**
-```
-Steam64 = Steam32 + 76561197960265728
-Steam32 = Steam64 - 76561197960265728
-```
+**Конвертация:** `Steam64 = Steam32 + 76561197960265728`
 
-**URL:** `https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/steam_ids.txt`
+## IdReporter — автосбор Steam ID
 
-Файл загружается через `WebClient.DownloadString()` — в память, без создания файла на диске.
+При обнаружении нового sourceId через brute-force, ID автоматически отправляется в Google Forms:
+
+- **URL:** Google Forms formResponse endpoint
+- **Поля:** Game (код игры), Steam ID (Steam64)
+- **Режим:** fire-and-forget, timeout 5 сек, все исключения проглатываются
+- Данные попадают в Google Sheets для последующего добавления в `steam_ids.txt`
 
 ## Система защиты
 
-### Двусторонняя проверка ID
+### Двусторонняя проверка
 
-1. **Target ID** (ваш): проверяется по `steam_ids.txt` ДО начала работы. Если отсутствует → exit 3.
-2. **Source ID** (исходный): определяется перебором ТОЛЬКО среди ID из `steam_ids.txt`. Если ни один не подошёл → exit 2.
+1. **Target ID** (ваш): проверяется по `steam_ids.txt` ДО начала работы. Нет в списке → exit 3.
+2. **Source ID** (исходный): сначала поиск по списку, затем brute-force. Не найден → exit 2.
 
-Это означает:
-- Нельзя расшифровать сейвы, зашифрованные неизвестным ID
-- Нельзя зашифровать сейвы под ID, которого нет в списке
-- Для добавления нового ID нужен коммит в репозиторий
+### PickTestFile
 
-### MessageBox при ошибках
+Выбор файла для тестирования:
+1. Приоритет: `data000.bin`
+2. Затем: любой `*Slot*.bin`
+3. **Избегает** `data00-1.bin` (баг ValidateFirstSlice в MandarinJuiceCore)
 
-При кодах 2 и 3 показывается нативный Windows MessageBox (через P/Invoke `user32.dll`). Текст сообщения:
-- **Код 2:** «Сохранения несовместимы. Не удалось определить исходный аккаунт сохранений.»
-- **Код 3:** «Сохранения несовместимы. Ваш аккаунт не найден в авторизованном списке.»
+## Профили шифрования
 
-Steam ID в сообщении **не отображается**.
-
-## Профили шифрования игр
-
-Каждая игра использует свой профиль шифрования (`.bin` файл от MandarinJuice).
-
-| Файл профиля | Код игры | Поисковая строка |
-|--------------|----------|-----------------|
+| Файл | Код | Строка поиска |
+|------|-----|--------------|
 | `Resident Evil 9 Requiem v1.bin` | `re9` | `Resident Evil 9` |
 | `Monster Hunter Wilds v1.bin` | `mhw` | `Monster Hunter Wilds` |
 | `Dragon's Dogma 2 v1.bin` | `dd2` | `Dragon's Dogma 2` |
 | `Dead Rising Deluxe Remaster v1.bin` | `dr` | `Dead Rising` |
 | `Kunitsu-Gami Path of the Goddess v1.bin` | `kg` | `Kunitsu` |
 
-Алиасы определяются в `ResolveGameAlias()`. Профиль фильтруется по подстроке в имени файла (case-insensitive).
-
-## Система бэкапов
+## Бэкапы
 
 **Формат имени:** `backup_<Steam32_src>_<Steam32_dst>_<yyyyMMdd_HHmmss>`
 
-**Содержимое:**
-- Все оригинальные `.bin` файлы из папки сохранений
-- `info.txt` — метаданные (исходный ID, целевой ID, профиль, дата, список файлов)
-
-**Ротация:** хранится максимум 3 бэкапа. При создании нового — самый старый удаляется (сортировка по имени, т.е. по дате).
+Содержит все `.bin` + `info.txt`. Ротация: максимум 3, старые удаляются.
 
 ## Установщик (installer.exe)
 
-### Шаги установки
+.NET Framework 4.x WinForms. Компилируется через `csc.exe`.
 
-1. Создание `C:\Tools\SaveCompat\` и `mandarin\`
-2. Скачивание MandarinJuice CLI (ZIP с GitHub releases)
-3. Скачивание профилей игр (ZIP с GitHub releases)
-4. Установка .NET 10 runtime через `dotnet-install.ps1`
-5. Проверка работоспособности MandarinJuice (`-h`)
-6. Скачивание `save-convert.exe` из GitHub releases
-7. Добавление `C:\Tools\SaveCompat` в системный PATH
+### Шаги
 
-### Idempotency
+1. Создание `C:\Tools\SaveCompat\` и `mandarin\_profiles\`
+2. Скачивание профилей игр (_profiles.zip)
+3. Установка .NET 10 runtime (dotnet-install.ps1)
+4. Скачивание save-convert.zip → распаковка в installDir
+5. Добавление в системный PATH
 
-Установщик безопасен для повторного запуска:
-- MandarinJuice не перекачивается, если `mandarin-juice-cli.exe` уже существует
-- Профили не перекачиваются, если `.bin` файлы уже есть в `_profiles\`
-- PATH не дублируется, если путь уже есть
+### Особенности
 
-### UAC
-
-При запуске без прав администратора автоматически перезапускается с UAC-промптом (`runas`). Если пользователь отказывает — показывается MessageBox.
+- Обязательный чекбокс согласия на передачу Steam ID
+- Кнопка "Открыть инструкцию" после установки
+- Повторный запуск безопасен (idempotent)
+- UAC запрашивается автоматически
 
 ## Сборка
 
-### Требования
-- Windows с .NET Framework 4.x (обычно предустановлен)
-- `csc.exe` из `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\`
+### save-convert
 
-### Команды сборки
-
-**save-convert.exe:**
 ```cmd
-csc /nologo /target:winexe /out:save-convert.exe save-convert.cs
+cd save-convert
+dotnet publish -c Release --self-contained false -o publish
 ```
 
-**installer.exe:**
+Упаковать `publish/` (без .pdb) в `save-convert.zip`.
+
+### installer.exe
+
 ```cmd
-csc /nologo /target:winexe /out:installer.exe /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll installer.cs
+csc -nologo -target:winexe -platform:x64 -reference:System.dll -reference:System.Drawing.dll -reference:System.Windows.Forms.dll -reference:System.IO.Compression.dll -reference:System.IO.Compression.FileSystem.dll -out:installer.exe installer.cs
 ```
 
 ### Релиз
 
-Оба `.exe` размещаются в GitHub Releases. URL для автоскачивания:
+Файлы в GitHub Releases:
 ```
-https://github.com/AlexeyGoto/game-save-convert/releases/latest/download/save-convert.exe
-https://github.com/AlexeyGoto/game-save-convert/releases/latest/download/installer.exe
+installer.exe        — единственный файл для скачивания пользователем
+save-convert.zip     — скачивается автоматически установщиком
 ```
-
-## Добавление новой игры
-
-1. Получить профиль шифрования `.bin` из MandarinJuice
-2. Положить в `C:\Tools\SaveCompat\mandarin\_profiles\`
-3. Добавить алиас в `ResolveGameAlias()` в `save-convert.cs`
-4. Пересобрать и залить в releases
-
-## Добавление нового Steam ID
-
-1. Добавить ID (Steam32 или Steam64) в `steam_ids.txt`
-2. Закоммитить и запушить в `main`
-3. Изменение подхватится автоматически при следующем запуске `save-convert.exe`
-
-## Логирование
-
-Лог пишется в `C:\Tools\SaveCompat\save-convert.log`. Перезаписывается при каждом запуске (начинается с `===== START =====`).
-
-**Формат:** `YYYY-MM-DD HH:mm:ss <сообщение>`
-
-**Что логируется:**
-- Входные параметры (ID, путь, игра)
-- Найденные профили
-- Результат проверки MandarinJuice
-- Количество файлов сохранений
-- Количество загруженных Steam ID
-- Результат авторизации target ID
-- Прогресс brute-force (найденный ID, номер попытки)
-- Создание бэкапа
-- Re-sign (exit code MandarinJuice)
-- Скопированные файлы
-- Ошибки
 
 ## Структура репозитория
 
@@ -222,12 +176,47 @@ https://github.com/AlexeyGoto/game-save-convert/releases/latest/download/install
 game-save-convert/
 ├── README.md          # Пользовательская документация
 ├── DOCS.md            # Техническая документация (этот файл)
-├── install.ps1        # PowerShell-установщик (legacy)
+├── LICENSE            # MIT
 ├── steam_ids.txt      # База известных Steam ID
-├── .gitignore         # Исключает *.cs, *.log, *.zip, *.mhtml
+├── .gitignore         # Исключает исходники, бинарники, архивы
 │
-├── save-convert.cs    # Исходник утилиты (локально, git-ignored)
-├── save-convert.exe   # Собранный бинарник (git-ignored, в releases)
-├── installer.cs       # Исходник установщика (локально, git-ignored)
+├── save-convert/      # Исходники (git-ignored)
+├── installer.cs       # Исходник установщика (git-ignored)
 └── installer.exe      # Собранный установщик (git-ignored, в releases)
 ```
+
+### Структура установки
+
+```
+C:\Tools\SaveCompat\
+├── save-convert.exe              # Основная утилита
+├── save-convert.dll              # Основная библиотека
+├── MandarinJuiceCore.dll         # Движок шифрования
+├── Mi5hmasH.*.dll                # Зависимости
+├── save-convert.deps.json
+├── save-convert.runtimeconfig.json
+├── save-convert.log              # Лог
+└── mandarin\
+    └── _profiles\                # Профили шифрования
+        ├── Resident Evil 9 Requiem v1.bin
+        ├── Monster Hunter Wilds v1.bin
+        └── ...
+```
+
+## Логирование
+
+Лог: `C:\Tools\SaveCompat\save-convert.log`. Перезаписывается при каждом запуске.
+
+**Формат:** `YYYY-MM-DD HH:mm:ss <сообщение>`
+
+## Добавление новой игры
+
+1. Получить профиль `.bin` из MandarinJuice
+2. Добавить алиас в `ResolveGameAlias()` в `Program.cs`
+3. Пересобрать и залить в releases + обновить профили
+
+## Добавление нового Steam ID
+
+1. Добавить в `steam_ids.txt` (Steam32 или Steam64)
+2. Закоммитить и запушить в `main`
+3. Подхватится автоматически при следующем запуске
