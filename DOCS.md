@@ -1,4 +1,4 @@
-# Техническая документация — Game Save Convert v2.0
+# Техническая документация — Game Save Convert v2.2
 
 ## Архитектура
 
@@ -7,55 +7,73 @@
 | Файл | Назначение | Runtime |
 |------|-----------|---------|
 | `save-convert.exe` | Основная утилита (+ встроенный brute-force) | .NET 10 |
-| `installer.exe` | GUI-установщик | .NET Framework 4.x |
+| `installer.exe` | GUI/CLI-установщик | .NET Framework 4.x |
 
 ### Компоненты save-convert
 
 | Файл | Назначение |
 |------|-----------|
-| `Program.cs` | Точка входа, CLI-аргументы, оркестрация |
+| `Program.cs` | Точка входа, CLI-аргументы, оркестрация, команда `check` |
 | `BruteForce.cs` | HeaderKey pre-filter + полный перебор |
 | `SaveOperations.cs` | Decrypt/Encrypt/Re-sign через MandarinJuiceCore |
-| `SteamIds.cs` | Загрузка и парсинг steam_ids.txt |
+| `SteamIds.cs` | Загрузка и парсинг steam_ids.txt (с cache-busting) |
 | `ProgressForm.cs` | WinForms окно прогресса brute-force |
 | `IdReporter.cs` | Отправка найденных ID в Google Forms |
 
 ## Алгоритм работы
 
 ```
-1. Парсинг аргументов (steam_id, путь, игра)
-2. Загрузка профилей из C:\Tools\SaveCompat\mandarin\_profiles\*.bin
-3. Фильтрация по игре (ResolveGameAlias: re9, mhw, dd2, dr, kg)
-4. Проверка папки сохранений (нет файлов → exit 0)
-5. Загрузка steam_ids.txt (HTTP GET в память)
-6. Проверка targetId в авторизованном списке (нет → MessageBox + exit 3)
-7. Тест: расшифровка testFile с targetId (MandarinJuiceCore напрямую)
+0. Очистка temp от предыдущих запусков
+1. Команда check? → RunCheck() → exit
+2. Парсинг аргументов (steam_id, путь, игра, -silent)
+3. Загрузка профилей из C:\Tools\SaveCompat\mandarin\_profiles\*.bin
+4. Фильтрация по игре (ResolveGameAlias: re9, mhw, dd2, dr, kg)
+5. Проверка папки сохранений (нет файлов → exit 0)
+6. Загрузка steam_ids.txt (HTTP GET + cache-busting)
+   └─ Нет интернета → MessageBox + exit 1
+7. Проверка targetId в авторизованном списке (нет → MessageBox + exit 3)
+8. Тест: расшифровка testFile с targetId
    └─ Если успех → сейвы уже совместимы → exit 0
-8. Поиск по списку: HeaderKey pre-filter для каждого ID
+9. Поиск по списку: HeaderKey pre-filter для каждого ID
    └─ Мгновенно (~1мс на все ID из списка)
-9. Если не найден → ProgressForm + полный brute-force (0..4.3B)
-   └─ ~18M ID/sec, ~4 мин максимум
-10. IdReporter.Report(id) — отправка в Google Forms
-11. Backup → Re-sign всех файлов → exit 0
+10. Если не найден → ProgressForm + полный brute-force (0..4.3B)
+    └─ ~18M ID/sec, ~4 мин максимум
+    └─ Отмена → Cleanup temp → exit 1
+11. IdReporter.Report(id) — отправка в Google Forms
+12. Re-sign всех файлов во TEMP (ошибка → abort, оригиналы нетронуты)
+13. Backup оригиналов (ошибка → abort, оригиналы нетронуты)
+14. Копирование re-signed из temp в папку сохранений
+15. Очистка старых бэкапов (keep 3) → Cleanup temp → exit 0
 ```
 
-**Exit codes:** 0=успех, 1=ошибка, 2=не найден, 3=целевой ID не авторизован
+**Exit codes:** 0=успех, 1=ошибка/отмена, 2=не найден, 3=целевой ID не авторизован
+
+## Команда check
+
+```
+save-convert check <steam_id>
+```
+
+1. Загрузка steam_ids.txt
+2. Проверка наличия ID в списке
+3. Если найден → MessageBox "ID найден, конвертация возможна"
+4. Если не найден → авто-отправка в Google Forms + MessageBox "Заявка отправлена, будет добавлен в течение дня"
 
 ## BruteForce — HeaderKey Pre-filter
 
-Ключевая оптимизация v2.0. Вместо полной расшифровки каждого файла (~2300 ID/sec), используется проверка по HeaderKey (~18M ID/sec).
+Ключевая оптимизация. Вместо полной расшифровки каждого файла (~2300 ID/sec), используется проверка по HeaderKey (~18M ID/sec).
 
 ### Принцип
 
-MandarinDeencryptor генерирует 64-байтный HeaderKey из userId через SplitMix64. Этот ключ XOR-ится с заголовком файла. Зная исходный заголовок (он фиксирован — `0x00` байты), можно предсказать первые 64 байта зашифрованного файла для любого userId.
+Первые 64 байта каждого slice header в зашифрованном файле — это HeaderKey (статическое значение из MandarinDeencryptor), XOR'd с потоком SplitMix64. HeaderKey одинаков для всех userId, а SplitMix64 поток зависит от userId. Зная HeaderKey и зашифрованные байты, можно предсказать ожидаемый SplitMix64 поток для правильного userId.
 
 ### Алгоритм
 
 1. Извлечь `HeaderKey` через reflection из `MandarinDeencryptor`
 2. Для тестового файла: предвычислить `stateAfterQueue` и `expectedXorBytes` (64 байта)
 3. Для каждого кандидатного ID:
-   - 16 вызовов SplitMix64 (unrolled) → 8 байт каждый → 128 байт → берём первые 64
-   - Побайтовое сравнение с `expectedXorBytes`
+   - 16 вызовов SplitMix64 (CalculateHeaderChecksum)
+   - Побайтовое сравнение с `expectedXorBytes` (DeencryptSliceHeader)
    - 99.6% отсеиваются по первому байту
 4. Если pre-filter пройден → полная верификация через `MandarinDeencryptor.DecryptData`
 
@@ -68,9 +86,28 @@ MandarinDeencryptor генерирует 64-байтный HeaderKey из userId
 | 2 | `~steam64` | RE9 |
 | 3 | `~obfuscated(steam64)` | — |
 
+## Безопасность данных
+
+### Принцип: оригиналы неприкосновенны
+
+1. **Перешифровка** выполняется только в `%TEMP%\save-compat-work\resign\`
+2. Если ЛЮБОЙ файл не прошёл → abort, temp удаляется, оригиналы нетронуты
+3. **Бэкап** создаётся только после успешной перешифровки ВСЕХ файлов
+4. **Копирование** результатов из temp в папку сохранений — последний шаг
+5. При ошибке копирования → сообщение с путём к бэкапу для ручного восстановления
+
+### Очистка temp
+
+- При старте: удаление leftover temp от предыдущих запусков/крашей
+- При отмене: `Cleanup()` → удаление temp → exit 1
+- При ошибке: `Die()` → `Cleanup()` → exit с кодом ошибки
+- При успехе: `Cleanup()` → exit 0
+
 ## steam_ids.txt
 
 **URL:** `https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/steam_ids.txt`
+
+**Cache-busting:** к URL добавляется `?t=<unix_timestamp>` для обхода 5-минутного CDN-кэша GitHub.
 
 **Формат:**
 ```
@@ -89,10 +126,10 @@ MandarinDeencryptor генерирует 64-байтный HeaderKey из userId
 
 ## IdReporter — автосбор Steam ID
 
-При обнаружении нового sourceId через brute-force, ID автоматически отправляется в Google Forms:
+При обнаружении нового sourceId через brute-force, а также при команде `check` для неизвестного ID, автоматически отправляется в Google Forms:
 
 - **URL:** Google Forms formResponse endpoint
-- **Поля:** Game (код игры), Steam ID (Steam64)
+- **Поля:** Game (код игры или "check"), Steam ID (Steam64)
 - **Режим:** fire-and-forget, timeout 5 сек, все исключения проглатываются
 - Данные попадают в Google Sheets для последующего добавления в `steam_ids.txt`
 
@@ -128,22 +165,30 @@ MandarinDeencryptor генерирует 64-байтный HeaderKey из userId
 
 ## Установщик (installer.exe)
 
-.NET Framework 4.x WinForms. Компилируется через `csc.exe`.
+.NET Framework 4.x, компилируется как console app (`/target:exe`) для совместимости с CMD. В GUI-режиме вызывает `FreeConsole()`.
 
-### Шаги
+### Режимы
+
+- **GUI**: запуск без аргументов → окно с чекбоксом согласия, прогрессом, логом
+- **Silent**: `/s`, `/silent`, `/quiet`, `/q` → вывод в консоль, без окон, без открытия файлов
+
+### Шаги установки
 
 1. Создание `C:\Tools\SaveCompat\` и `mandarin\_profiles\`
 2. Скачивание профилей игр (_profiles.zip)
-3. Установка .NET 10 runtime (dotnet-install.ps1)
+3. Установка .NET 10 Desktop Runtime (прямая загрузка + winget fallback)
 4. Скачивание save-convert.zip → распаковка в installDir
 5. Добавление в системный PATH
+6. Скачивание README.md локально
 
 ### Особенности
 
-- Обязательный чекбокс согласия на передачу Steam ID
-- Кнопка "Открыть инструкцию" после установки
+- Обязательный чекбокс согласия на передачу Steam ID (GUI)
+- Авто-открытие локального README после установки (GUI)
+- Вывод пути к README в консоль (Silent)
+- Temp-файлы в installDir (не %TEMP%, т.к. SYSTEM не может писать в C:\Windows\TEMP)
 - Повторный запуск безопасен (idempotent)
-- UAC запрашивается автоматически
+- UAC запрашивается автоматически (GUI)
 
 ## Сборка
 
@@ -159,7 +204,7 @@ dotnet publish -c Release --self-contained false -o publish
 ### installer.exe
 
 ```cmd
-csc -nologo -target:winexe -platform:x64 -reference:System.dll -reference:System.Drawing.dll -reference:System.Windows.Forms.dll -reference:System.IO.Compression.dll -reference:System.IO.Compression.FileSystem.dll -out:installer.exe installer.cs
+csc -nologo -target:exe -platform:x64 -reference:System.dll -reference:System.Drawing.dll -reference:System.Windows.Forms.dll -reference:System.IO.Compression.dll -reference:System.IO.Compression.FileSystem.dll -out:installer.exe installer.cs
 ```
 
 ### Релиз
@@ -196,6 +241,7 @@ C:\Tools\SaveCompat\
 ├── save-convert.deps.json
 ├── save-convert.runtimeconfig.json
 ├── save-convert.log              # Лог
+├── README.md                     # Инструкция
 └── mandarin\
     └── _profiles\                # Профили шифрования
         ├── Resident Evil 9 Requiem v1.bin
@@ -209,6 +255,8 @@ C:\Tools\SaveCompat\
 
 **Формат:** `YYYY-MM-DD HH:mm:ss <сообщение>`
 
+Логируются: загруженные ID (первые 10), результат list search, прогресс brute-force, шаги re-sign/backup/copy.
+
 ## Добавление новой игры
 
 1. Получить профиль `.bin` из MandarinJuice
@@ -217,6 +265,11 @@ C:\Tools\SaveCompat\
 
 ## Добавление нового Steam ID
 
+### Автоматически
+- `save-convert check <steam_id>` — проверка + авто-заявка
+- Brute-force находит ID → авто-отправка через IdReporter
+
+### Вручную
 1. Добавить в `steam_ids.txt` (Steam32 или Steam64)
 2. Закоммитить и запушить в `main`
-3. Подхватится автоматически при следующем запуске
+3. Подхватится автоматически при следующем запуске (с учётом cache-busting)
