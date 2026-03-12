@@ -32,12 +32,6 @@
 
 После установки перезапустите терминал (или ПК), чтобы PATH обновился.
 
-### Тихая установка (для автоматизации)
-
-```cmd
-curl -L -o C:\Tools\installer.exe https://github.com/AlexeyGoto/game-save-convert/releases/latest/download/installer.exe && C:\Tools\installer.exe /s
-```
-
 ### Передача Steam ID
 
 **При первом запуске утилиты ваш Steam ID автоматически отправляется в базу данных.**
