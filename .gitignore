@@ -3,10 +3,13 @@
 *.cs
 *.zip
 *.mhtml
+*.cmd
 
 # Build directories
 save-convert/
+save-convert-v3/
 save-brute/
+_backup_v2/
 bin/
 obj/
 publish/
