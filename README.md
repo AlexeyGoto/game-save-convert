@@ -138,6 +138,23 @@ save-convert.exe -821127145 -"D:\MySaves\win64_save" -re9 -steam
 save-convert.exe check 76561197960287930
 ```
 
+### Автоматический запуск через Steam
+
+Можно настроить автоматическую конвертацию при каждом запуске RE9 через Steam.
+
+**Steam → Библиотека → ПКМ по RE9 → Свойства → Параметры запуска:**
+
+```
+cmd /c start /wait "" "C:\Tools\SaveCompat\save-convert.exe" -ВАШ_STEAM_ID -"C:\Program Files (x86)\Steam\userdata\ВАШ_STEAM32\3764200\remote\win64_save" -re9 -silent & start "" %command%
+```
+
+Пример для Steam ID 821127145:
+```
+cmd /c start /wait "" "C:\Tools\SaveCompat\save-convert.exe" -821127145 -"C:\Program Files (x86)\Steam\userdata\821127145\3764200\remote\win64_save" -re9 -silent & start "" %command%
+```
+
+Конвертер проверит сейвы, при необходимости перешифрует, затем запустит игру. Если сейвы уже совместимы — игра запустится мгновенно.
+
 ### Где взять Steam ID
 
 Ваш Steam ID — это числовой идентификатор аккаунта. Его можно найти:
