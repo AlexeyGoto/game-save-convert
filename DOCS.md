@@ -156,6 +156,8 @@ if (patchVersion) {
 
 При переносе сохранений на Steam необходимо создать файл `remotecache.vdf`, чтобы Steam Cloud Sync распознал файлы. Без него Steam может перезаписать их облачной копией.
 
+> **ВАЖНО:** Перед конвертацией на Steam необходимо отключить Steam Cloud для RE9 (Свойства игры → Общие → снять «Сохранять игры в Steam Cloud»). Если облако включено, Steam перезапишет сконвертированные файлы и remotecache.vdf облачной копией. Включить обратно можно после проверки, что сейвы загружаются.
+
 ### Расположение
 
 ```
@@ -318,6 +320,7 @@ public static bool IsBuildSupported(uint build) => build <= BuildMaxSupported;
 - Temp-файлы в installDir (не %TEMP%, т.к. SYSTEM не может писать в C:\Windows\TEMP)
 - Повторный запуск безопасен (idempotent)
 - UAC запрашивается автоматически (GUI)
+- **После установки необходима перезагрузка ПК** — системный PATH обновляется только после reboot/relogin
 
 ## Сборка
 
@@ -376,6 +379,18 @@ C:\Tools\SaveCompat\
     └── _profiles\                # Профиль шифрования
         └── Resident Evil 9 Requiem v1.bin
 ```
+
+## Интеграция со Steam (параметры запуска)
+
+Конвертер можно настроить на автозапуск при старте RE9 через параметры запуска Steam:
+
+```
+cmd /c start /wait "" "C:\Tools\SaveCompat\save-convert.exe" -<steam_id> -"<путь_к_сейвам>" -re9 -silent & start "" %command%
+```
+
+- `start /wait` — необходим, т.к. save-convert.exe является WinExe (GUI), CMD не ждёт его завершения без `start /wait`
+- `start "" %command%` — запускает игру отдельным процессом, CMD-окно закрывается сразу
+- `-silent` — обязателен, иначе конвертер покажет MessageBox с результатом
 
 ## Логирование
 
