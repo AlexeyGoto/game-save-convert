@@ -8,6 +8,7 @@
 # Build directories
 save-convert/
 save-convert-v3/
+save-convert-v4/
 save-brute/
 _backup_v2/
 bin/

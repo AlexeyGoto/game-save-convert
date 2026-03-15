@@ -1,6 +1,21 @@
 # Game Save Convert — TODO / Roadmap
 
-## v3.0 (текущий релиз) — RE9 Steam <-> Crack
+## v4.0 (текущий релиз) — offline-first, быстрый brute-force, без whitelist
+
+- [x] Chunk-based parallel brute-force (~830M/поток, ~5.9B/все ядра, worst case 1-17 сек)
+- [x] Гибридный режим: download steam_ids.txt (1 сек) → list search → brute-force
+- [x] Offline-first: без интернета → сразу brute-force (не exit 1)
+- [x] Убрана проверка target ID по whitelist (exit 3 удалён)
+- [x] Удалён IdReporter (отправка ID на сервер)
+- [x] Удалён known_ids.txt (локальный кэш бесполезен на замороженных ПК)
+- [x] Удалена команда check
+- [x] remotecache.vdf: read-only атрибут для защиты от Steam Cloud
+- [x] Динамический InstallDir (не привязан к C:\Tools\SaveCompat)
+- [x] Installer v4: без consent panel, кнопка сразу активна
+- [x] Benchmark команда
+- [x] Обновление README.md, DOCS.md, TODO.md
+
+## v3.0 — RE9 Steam <-> Crack
 
 - [x] Перенос сохранений Steam <-> Crack (re-encrypt)
 - [x] Автодетекция платформы (Steam/GSE по пути)
@@ -9,41 +24,10 @@
 - [x] Генерация remotecache.vdf для Steam Cloud Sync
 - [x] Валидация BUILD — блокировка неподдерживаемых версий
 - [x] Флаги -crack / -steam для принудительного выбора платформы
-- [x] Удаление неподдерживаемых игр (только RE9)
-- [x] Обновление README.md и DOCS.md
-- [x] Обновить релиз на GitHub (save-convert.zip + installer.exe)
-
-## v3.1 — убрать обязательное одобрение заявок
-
-### Проблема
-Сейчас target ID проверяется по `steam_ids.txt` — без одобрения конвертация невозможна (exit 3).
-Это создаёт задержку: пользователь отправляет заявку → ждёт добавления → повторяет.
-
-### План
-1. **Убрать проверку target ID по списку** — любой target ID разрешён
-2. **Оставить список для ускорения** — list search по известным source ID (мгновенно)
-3. **Авто-отправка обоих ID** — source и target → Google Forms (fire-and-forget)
-4. **Список становится кэшем**, а не whitelist'ом
-
-### Изменения в коде
-- `Program.cs`: убрать блок проверки `targetId in authorizedList` + exit 3
-- `Program.cs`: `IdReporter.Report()` — отправлять и source, и target
-- Exit codes: убрать код 3
-
-## v3.2 — история конвертаций
-
-### Проблема
-На облачных серверах сессии короткие, сейвы синхронизируются с задержкой.
-Может случиться: часть файлов под одним ID, часть под другим.
-
-### План
-1. **Файл истории** в папке сохранений: `save-convert-history.log`
-2. Append-only, не перезаписывается
-3. Включается в backup
 
 ## Известные ограничения
 
-- **Steam Cloud**: при переносе на Steam необходимо вручную отключать облако (иначе перезапишет remotecache.vdf и сейвы)
+- **Steam Cloud**: при переносе на Steam необходимо вручную отключать облако (remotecache.vdf read-only помогает, но не гарантирует)
 - **Первые сохранения**: на Steam-аккаунте должны быть хоть какие-то сейвы (дойти до первого чекпоинта)
 - **Перезагрузка после установки**: PATH обновляется только после reboot
 
@@ -51,5 +35,4 @@
 
 - [ ] Поддержка нескольких папок сохранений за один запуск
 - [ ] Проверка целостности после конвертации (decrypt target → success)
-- [ ] Локальный кэш steam_ids.txt на случай отсутствия интернета (offline mode)
 - [ ] Ремонт сейвов с разной шифровкой (data00-1 под одним ID, остальные под другим)
