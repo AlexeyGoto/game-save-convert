@@ -1,16 +1,22 @@
 *.log
 *.exe
-*.cs
 *.zip
 *.mhtml
 *.cmd
 
 # Build directories
-save-convert/
-save-convert-v3/
-save-convert-v4/
-save-brute/
-_backup_v2/
 bin/
 obj/
 publish/
+
+# Old versions and unused sources
+save-convert/
+save-convert-v3/
+save-brute/
+_backup_v2/
+installer.cs
+installer-v3.cs
+save-convert.cs
+
+# Test directories
+тест старт/

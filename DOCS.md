@@ -1,4 +1,4 @@
-# Техническая документация — Game Save Convert v4.0
+# Техническая документация — Game Save Convert v4.3
 
 ## Архитектура
 
@@ -16,7 +16,7 @@
 | `Program.cs` | Точка входа, CLI-аргументы, оркестрация |
 | `BruteForce.cs` | Chunk-based parallel HeaderKey pre-filter + полный перебор |
 | `SaveOperations.cs` | Decrypt/Encrypt/Re-sign/ReadSaveVersion/ProcessData001 через MandarinJuiceCore |
-| `SavePatching.cs` | Детекция платформы (Steam/Crack), BUILD константы, валидация, даунгрейд логика |
+| `SavePatching.cs` | Детекция платформы (Steam/Crack), BUILD константы, KnownBuildVersions, DefaultTargetBuild |
 | `RemoteCacheGenerator.cs` | Генерация remotecache.vdf для Steam Cloud Sync (+ read-only атрибут) |
 | `SteamIds.cs` | Загрузка и парсинг steam_ids.txt (async, graceful timeout 1 сек) |
 | `ProgressForm.cs` | WinForms окно прогресса brute-force |
@@ -27,31 +27,28 @@
 ```
 0. Очистка temp от предыдущих запусков
 1. Команда benchmark? → Benchmark.Run() → exit 0
-2. Парсинг аргументов (steam_id, путь, игра, -silent, -crack/-steam)
-3. Детекция целевой платформы (автоматически по пути или принудительно через -crack/-steam)
-4. Загрузка профиля RE9 из <InstallDir>\mandarin\_profiles\*.bin
-5. Проверка папки сохранений (нет файлов → exit 0)
-6. Тест: расшифровка testFile с targetId
+2. Парсинг аргументов (steam_id, путь, игра, -silent, -crack/-steam, -targetsavebuild)
+3. targetBuild = DefaultTargetBuild (0x01001002), или переопределённый через -targetsavebuild
+4. Детекция целевой платформы (автоматически по пути или принудительно через -crack/-steam)
+5. Загрузка профиля RE9 из <InstallDir>\mandarin\_profiles\*.bin
+6. Проверка папки сохранений (нет файлов → exit 0)
+7. Тест: расшифровка testFile с targetId
    └─ Если успех → сейвы уже совместимы (+ remotecache.vdf для Steam) → exit 0
-7. Попытка скачать steam_ids.txt (timeout 1 сек)
+8. Попытка скачать steam_ids.txt (timeout 1 сек)
    ├─ Успех → list search по HeaderKey pre-filter (мгновенно)
    └─ Ошибка → лог "offline mode", идём дальше
-8. Если не найден → ProgressForm + полный brute-force (0..4.3B)
-   └─ Chunk-based: ~830M ID/sec (1 поток), ~5.9B ID/sec (все ядра)
-   └─ Worst case: ~17 сек (1 поток), ~1 сек (12 ядер)
+9. Если не найден → ProgressForm + полный brute-force (0..4.3B)
    └─ Отмена → Cleanup temp → exit 1
-9. Валидация BUILD всех файлов (> BuildMaxSupported → abort exit 1)
-10. Определение targetBuild: Crack → 0x01001000, Steam → null
-11. Re-sign всех файлов во TEMP + BUILD patch при Crack target
+10. Re-sign всех файлов во TEMP + BUILD downgrade (если curBuild > targetBuild)
     (ошибка → abort, оригиналы нетронуты)
-12. data00-1.bin: re-sign + BUILD patch + version+2 (при даунгрейде)
-13. Backup оригиналов (ошибка → abort, оригиналы нетронуты)
-14. Копирование re-signed из temp в папку сохранений
-15. remotecache.vdf (если Steam target) → read-only атрибут
-16. Очистка старых бэкапов (keep 3) → Cleanup temp → exit 0
+11. data00-1.bin: re-sign + BUILD downgrade + version+2 (только если BUILD реально понижен)
+12. Backup оригиналов (ошибка → abort, оригиналы нетронуты)
+13. Копирование re-signed из temp в папку сохранений
+14. remotecache.vdf (если Steam target) → read-only атрибут
+15. Очистка старых бэкапов (keep 3) → Cleanup temp → exit 0
 ```
 
-**Exit codes:** 0=успех, 1=ошибка/отмена/неподдерживаемый BUILD, 2=не найден
+**Exit codes:** 0=успех, 1=ошибка/отмена, 2=не найден
 
 ## BruteForce — Chunk-based Parallel Pre-filter (v4)
 
@@ -93,24 +90,23 @@
 | 2 | `~steam64` | RE9 |
 | 3 | `~obfuscated(steam64)` | — |
 
-## Гибридный режим поиска source ID (v4)
+## Система даунгрейда BUILD (v4.3)
 
-```
-1. Совместимы? (decrypt с target ID) → exit 0
-2. Попытка скачать steam_ids.txt (timeout 1 сек)
-   ├─ Успех → list search (мгновенно)
-   └─ Ошибка → лог "offline mode"
-3. Не найден или список пуст → brute-force (5-17 сек)
-```
+### Изменения в v4.3
 
-**Что убрано в v4 по сравнению с v3:**
-- Whitelist проверка target ID (exit 3)
-- Команда `check`
-- `IdReporter.cs` — отправка ID на сервер
-- `known_ids.txt` — локальный кэш (ПК заморожены, бесполезен)
-- Обязательный интернет — без него v3 выходил с exit 1
+- **Автоматический**: targetBuild всегда задан (по умолчанию `DefaultTargetBuild = 0x01001002`)
+- **Только даунгрейд**: `curBuild > targetBuild` → патч вниз. Если `curBuild <= targetBuild` → без изменений
+- **`-targetsavebuild`**: опциональное переопределение целевого BUILD
+- **Version patch**: `data00-1.bin` version+2 только если BUILD был реально понижен
 
-## Система даунгрейда BUILD
+### Соответствие BUILD и версий
+
+| BUILD | Версия | Алиас |
+|-------|--------|-------|
+| `0x01001000` | v1.0 (initial release) | `v4`, `crack` |
+| `0x01001001` | v1.0.1 | — |
+| `0x01001002` | v1.1 (April 2026 patch) | `v5`, `steam` |
+| `0x01002000` | v2.0 (March 2026 Steam update) | `v6` |
 
 ### Смещения
 
@@ -118,27 +114,6 @@
 |-----------|---------------|---------|
 | data000.bin, *Slot*.bin | 0x5C | data000.bin, data000Slot0001AutoSave.bin |
 | data00-1.bin | 0x4C | Настройки, назначения клавиш |
-
-### Известные значения BUILD
-
-| Значение | Описание |
-|----------|----------|
-| `0x01001000` | Старая версия (crack v4) |
-| `0x01001001` | Промежуточная (некоторые файлы) |
-| `0x01001002` | Новая версия (Steam v5) |
-
-### Логика
-
-```
-SavePatching.DetectTarget(savePath):
-  path содержит "STEAM" → SaveTarget.Steam
-  path содержит "GSE"   → SaveTarget.Crack
-  иначе → SaveTarget.Unknown (можно переопределить через -crack/-steam)
-
-targetBuild:
-  Crack → 0x01001000 (каждый файл проверяется и патчится индивидуально)
-  Steam → null (без даунгрейда)
-```
 
 ## data00-1.bin — version counter
 
@@ -148,7 +123,7 @@ targetBuild:
 
 ### Решение
 
-При даунгрейде `data00-1.bin`: после патча BUILD, увеличить `version` на +2.
+При даунгрейде `data00-1.bin`: если BUILD был реально понижен, увеличить `version` на +2.
 
 ## remotecache.vdf
 
@@ -192,10 +167,10 @@ File.SetAttributes(vdfPath, FileAttributes.ReadOnly);
 
 | Сценарий | Детекция | BUILD | data00-1 | remotecache.vdf |
 |----------|----------|-------|----------|-----------------|
-| **Crack → Steam** | auto (STEAM) или -steam | Без изменений | Re-sign | Генерируется (read-only) |
-| **Steam → Crack** | auto (GSE) или -crack | Downgrade 0x01001002 → 0x01001000 | Re-sign + BUILD patch + version+2 | Не генерируется |
-| **Crack → Crack** (другой ID) | auto (GSE) или -crack | Downgrade если build > 0x01001000 | Re-sign + patch если нужно | Не генерируется |
-| **Steam → Steam** (другой ID) | auto (STEAM) или -steam | Без изменений | Re-sign | Генерируется (read-only) |
+| **Crack → Steam** | auto (STEAM) или -steam | Downgrade если > target | Re-sign + patch если downgraded | Генерируется (read-only) |
+| **Steam → Crack** | auto (GSE) или -crack | Downgrade если > target | Re-sign + BUILD patch + version+2 если downgraded | Не генерируется |
+| **Crack → Crack** (другой ID) | auto (GSE) или -crack | Downgrade если > target | Re-sign + patch если downgraded | Не генерируется |
+| **Steam → Steam** (другой ID) | auto (STEAM) или -steam | Downgrade если > target | Re-sign + patch если downgraded | Генерируется (read-only) |
 | **Уже совместимы** | — | — | — | Генерируется (если Steam) |
 
 ## Безопасность данных
@@ -216,13 +191,6 @@ File.SetAttributes(vdfPath, FileAttributes.ReadOnly);
 
 - **GUI**: запуск без аргументов → окно с прогрессом и логом, кнопка "Установить" сразу активна
 - **Silent**: `/s`, `/silent`, `/quiet`, `/q` → вывод в консоль, без окон
-
-### Изменения в v4
-
-- Убран consent panel (согласие на передачу Steam ID) — v4 ничего не отправляет
-- Кнопка "Установить" сразу активна (без чекбокса)
-- Версия 4.0 в заголовках и тексте
-- Описание: "Быстрая конвертация сохранений между Steam ID без ограничений"
 
 ## Сборка
 
@@ -253,16 +221,23 @@ save-convert.zip     — скачивается автоматически ус�
 
 ```
 game-save-convert/
-├── README.md          # Пользовательская документация
-├── DOCS.md            # Техническая документация (этот файл)
-├── TODO.md            # Roadmap
-├── LICENSE            # MIT
-├── steam_ids.txt      # База известных Steam ID
-├── .gitignore         # Исключает исходники, бинарники, архивы
-│
-├── save-convert-v4/   # Исходники v4.0 (git-ignored)
-├── installer-v4.cs    # Исходник установщика (git-ignored)
-└── installer.exe      # Собранный установщик (git-ignored, в releases)
+├── README.md              # Пользовательская документация (русский)
+├── README_EN.md           # Пользовательская документация (английский)
+├── DOCS.md                # Техническая документация (этот файл)
+├── LICENSE                # MIT
+├── .gitignore
+├── steam_ids.txt          # База известных Steam ID
+├── installer-v4.cs        # Исходник установщика
+└── save-convert-v4/       # Исходники основной утилиты
+    ├── save-convert-v4.csproj
+    ├── Program.cs
+    ├── SaveOperations.cs
+    ├── SavePatching.cs
+    ├── BruteForce.cs
+    ├── Benchmark.cs
+    ├── ProgressForm.cs
+    ├── RemoteCacheGenerator.cs
+    └── SteamIds.cs
 ```
 
 ## Добавление нового Steam ID
