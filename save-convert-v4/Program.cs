@@ -8,8 +8,8 @@ using Mi5hmasH.GameProfile;
 using SaveConvert;
 
 // ============================================================
-// Game Save Convert v4.3 — fully local, no server dependencies
-// v4.3: auto-downgrade to DefaultTargetBuild, -targetsavebuild override
+// Game Save Convert v5.0 — universal RE Engine converter
+// v5.0: auto-detect game by AppID, -game optional, multi-game support
 // ============================================================
 
 string InstallDir = Path.GetDirectoryName(Environment.ProcessPath) ?? @"C:\Tools\SaveCompat";
@@ -50,7 +50,7 @@ int Die(string msg, int code)
     return code;
 }
 
-try { File.WriteAllText(logFile, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} ===== START v4.3 ====={Environment.NewLine}"); }
+try { File.WriteAllText(logFile, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} ===== START v5.0 ====={Environment.NewLine}"); }
 catch { }
 
 // Clean leftover temp from previous runs/crashes
@@ -69,6 +69,7 @@ string? savePath = null;
 string? gameFilter = null;
 SavePatching.SaveTarget? forceTarget = null;
 uint targetBuild = SavePatching.DefaultTargetBuild;
+bool explicitBuildRequested = false;
 
 for (int i = 0; i < args.Length; i++)
 {
@@ -97,6 +98,7 @@ for (int i = 0; i < args.Length; i++)
         if (!SavePatching.TryParseBuild(buildArg, out uint parsedBuild))
             return Die($"Invalid build value '{buildArg}'. Use hex (0x01001000) or alias (v4, v5, v6, crack, steam)", 1);
         targetBuild = parsedBuild;
+        explicitBuildRequested = true;
         continue;
     }
     if (targetId == null && SteamIds.IsDigits(a))
@@ -107,8 +109,8 @@ for (int i = 0; i < args.Length; i++)
         gameFilter = a;
 }
 
-if (targetId == null || savePath == null || gameFilter == null)
-    return Die("Missing arguments. Usage: save-convert.exe -<steam_id> -<save_path> -<game> [-silent] [-crack|-steam] [-targetsavebuild <build>]", 1);
+if (targetId == null || savePath == null)
+    return Die("Missing arguments. Usage: save-convert.exe -<steam_id> -<save_path> [-game] [-silent] [-crack|-steam] [-targetsavebuild <build>]", 1);
 
 Log($"Silent mode: {silentMode}");
 
@@ -121,11 +123,34 @@ Log($"Save path: {savePath}");
 var saveTarget = forceTarget ?? SavePatching.DetectTarget(savePath);
 Log($"Target platform: {saveTarget}" + (forceTarget != null ? " (forced)" : " (auto-detected)"));
 
-// ===== Resolve game alias =====
-string? gameName = ResolveGameAlias(gameFilter);
-if (gameName == null)
-    return Die($"Unknown game: '{gameFilter}'. Valid: re9", 1);
-Log($"Game: {gameFilter} -> {gameName}");
+// ===== Resolve game & auto-detect AppID =====
+string? detectedAppId = TryExtractAppIdFromPath(savePath);
+string? profileAppIdFilter = null;
+string? profileNameFilter = null;
+
+if (gameFilter != null)
+{
+    string? resolved = ResolveGameAlias(gameFilter);
+    if (resolved != null)
+    {
+        profileNameFilter = resolved;
+        Log($"Game: {gameFilter} -> {resolved}");
+    }
+    else
+    {
+        profileNameFilter = gameFilter; // raw substring match
+        Log($"Game filter (raw): {gameFilter}");
+    }
+}
+else if (detectedAppId != null)
+{
+    profileAppIdFilter = detectedAppId;
+    Log($"Auto-detected AppID from path: {detectedAppId}");
+}
+else
+{
+    Log("No -game specified and no AppID detected — loading all profiles");
+}
 
 // ===== Load profiles =====
 string profDir = Path.Combine(InstallDir, @"mandarin\_profiles");
@@ -135,14 +160,20 @@ if (!Directory.Exists(profDir))
 var profileEntries = new List<(string path, MandarinGameProfile profile)>();
 foreach (string f in Directory.GetFiles(profDir, "*.bin"))
 {
-    if (Path.GetFileName(f).IndexOf(gameName, StringComparison.OrdinalIgnoreCase) < 0)
-        continue;
     try
     {
         var gpManager = new GameProfileManager<MandarinGameProfile>();
         gpManager.SetEncryptor(Keychain.GpMagic);
         gpManager.Load(f);
-        profileEntries.Add((f, gpManager.GameProfile));
+        var profile = gpManager.GameProfile;
+
+        if (profileAppIdFilter != null && profile.AppId != profileAppIdFilter)
+            continue;
+        if (profileNameFilter != null
+            && Path.GetFileName(f).IndexOf(profileNameFilter, StringComparison.OrdinalIgnoreCase) < 0)
+            continue;
+
+        profileEntries.Add((f, profile));
     }
     catch (Exception ex)
     {
@@ -151,7 +182,23 @@ foreach (string f in Directory.GetFiles(profDir, "*.bin"))
 }
 
 if (profileEntries.Count == 0)
-    return Die($"No profile for '{gameFilter}'. Reinstall to get profiles.", 1);
+    return Die($"No matching profile{(gameFilter != null ? $" for '{gameFilter}'" : "")}. Reinstall to get profiles.", 1);
+
+// Determine resolved AppID for RemoteCacheGenerator and BUILD gating
+string? resolvedAppId = profileAppIdFilter ?? detectedAppId
+    ?? (profileEntries.Count > 0 ? profileEntries[0].profile.AppId : null);
+
+// BUILD patching: only for RE9, unless explicitly requested
+uint? effectiveTargetBuild = null;
+if (explicitBuildRequested)
+    effectiveTargetBuild = targetBuild;
+else if (SavePatching.SupportsBuildPatching(resolvedAppId))
+    effectiveTargetBuild = targetBuild;
+// else: null → no BUILD patching for other games
+
+Log($"Resolved AppID: {resolvedAppId ?? "unknown"}");
+if (effectiveTargetBuild != null)
+    Log($"BUILD patching enabled: 0x{effectiveTargetBuild.Value:X8}");
 
 Log($"Loaded {profileEntries.Count} profile(s):");
 foreach (var (path, _) in profileEntries)
@@ -200,7 +247,7 @@ foreach (var (path, profile) in profileEntries)
         {
             try
             {
-                RemoteCacheGenerator.Generate(savePath);
+                RemoteCacheGenerator.Generate(savePath, resolvedAppId ?? "3764200");
                 Log("remotecache.vdf generated (saves already compatible)");
             }
             catch (Exception ex) { Log($"remotecache.vdf failed: {ex.Message}"); }
@@ -287,7 +334,8 @@ if (sourceId64 == null || foundProfile == null || foundProfilePath == null)
 }
 
 // ===== Version compatibility check =====
-Log($"Target build: 0x{targetBuild:X8}" + (SavePatching.GetBuildLabel(targetBuild) is string lbl ? $" ({lbl})" : ""));
+if (effectiveTargetBuild != null)
+    Log($"Target build: 0x{effectiveTargetBuild.Value:X8}" + (SavePatching.GetBuildLabel(effectiveTargetBuild.Value) is string lbl ? $" ({lbl})" : ""));
 {
     var data000File = saveFiles.FirstOrDefault(f =>
         Path.GetFileName(f).Equals("data000.bin", StringComparison.OrdinalIgnoreCase));
@@ -297,7 +345,15 @@ Log($"Target build: 0x{targetBuild:X8}" + (SavePatching.GetBuildLabel(targetBuil
         ulong srcUserId = ParseUserId(sourceId64, foundProfile.ParseVariant);
         var ver = SaveOperations.ReadSaveVersion(File.ReadAllBytes(data000File), foundProfile, srcUserId);
         if (ver != null)
+        {
             Log($"Save version: v={ver.Value.version}, build=0x{ver.Value.build:X8}");
+            // Silent mode graceful: disable BUILD patching for unknown builds
+            if (silentMode && effectiveTargetBuild != null && !SavePatching.IsKnownBuild(ver.Value.build))
+            {
+                Log("Unknown build detected in silent mode — disabling BUILD patching, will re-sign only");
+                effectiveTargetBuild = null;
+            }
+        }
     }
 }
 
@@ -320,7 +376,7 @@ foreach (string f in saveFiles)
         byte[] fileData = File.ReadAllBytes(f);
         var (newData, skipped, buildPatched) = SaveOperations.ResignFileWithPatch(
             fileData, foundProfile, sourceUserId, targetUserId,
-            isData001: false, targetBuild: (uint?)targetBuild);
+            isData001: false, targetBuild: effectiveTargetBuild);
         File.WriteAllBytes(Path.Combine(tempResignDir, Path.GetFileName(f)), newData);
         if (buildPatched) buildPatchCount++;
         if (skipped)
@@ -345,8 +401,8 @@ if (data001File != null)
         byte[] d001Data = File.ReadAllBytes(data001File);
         var (newData, oldVer, newVer, bPatched) = SaveOperations.ProcessData001(
             d001Data, foundProfile, sourceUserId, targetUserId,
-            targetBuild: (uint?)targetBuild,
-            patchVersion: true);
+            targetBuild: effectiveTargetBuild,
+            patchVersion: effectiveTargetBuild != null);
 
         File.WriteAllBytes(Path.Combine(tempResignDir, "data00-1.bin"), newData);
         string info = bPatched
@@ -382,8 +438,8 @@ try
     infoSb.AppendLine($"Profile: {Path.GetFileName(foundProfilePath)}");
     infoSb.AppendLine($"Target platform: {saveTarget}");
     infoSb.AppendLine($"Date: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-    if (buildPatchCount > 0)
-        infoSb.AppendLine($"BUILD downgrade target: 0x{targetBuild:X8}");
+    if (buildPatchCount > 0 && effectiveTargetBuild != null)
+        infoSb.AppendLine($"BUILD downgrade target: 0x{effectiveTargetBuild.Value:X8}");
     infoSb.AppendLine("Files:");
     foreach (string f in saveFiles)
         infoSb.AppendLine($"  {Path.GetFileName(f)}");
@@ -426,7 +482,7 @@ if (saveTarget == SavePatching.SaveTarget.Steam)
 {
     try
     {
-        RemoteCacheGenerator.Generate(savePath);
+        RemoteCacheGenerator.Generate(savePath, resolvedAppId ?? "3764200");
         Log("remotecache.vdf generated");
     }
     catch (Exception ex) { Log($"remotecache.vdf failed: {ex.Message}"); }
@@ -453,13 +509,32 @@ return 0;
 // Helper functions
 // =====================================================
 
-static string? ResolveGameAlias(string filter)
+static string? ResolveGameAlias(string filter) => filter.ToLowerInvariant() switch
 {
-    return filter.ToLowerInvariant() switch
+    "re9" or "requiem"                      => "Resident Evil 9",
+    "dd2" or "dogma2"                       => "Dragon's Dogma 2",
+    "mhw" or "wilds"                        => "Monster Hunter Wilds",
+    "mhs3" or "stories3"                    => "Monster Hunter Stories 3",
+    "dr" or "deadrising"                    => "Dead Rising Deluxe Remaster",
+    "kg" or "kunitsu"                       => "Kunitsu-Gami",
+    "pragmata"                              => "PRAGMATA",
+    "mmsf" or "megaman" or "starforce"      => "Mega Man Star Force",
+    _ => null
+};
+
+static string? TryExtractAppIdFromPath(string path)
+{
+    var segments = path.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+    for (int i = 0; i < segments.Length - 1; i++)
     {
-        "re9" => "Resident Evil 9",
-        _ => null
-    };
+        if (segments[i].Equals("userdata", StringComparison.OrdinalIgnoreCase)
+            && i + 2 < segments.Length && segments[i + 2].All(char.IsDigit) && segments[i + 2].Length > 0)
+            return segments[i + 2];
+        if (segments[i].Equals("GSE Saves", StringComparison.OrdinalIgnoreCase)
+            && i + 1 < segments.Length && segments[i + 1].All(char.IsDigit) && segments[i + 1].Length > 0)
+            return segments[i + 1];
+    }
+    return null;
 }
 
 static string PickTestFile(List<string> saveFiles)

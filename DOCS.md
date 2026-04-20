@@ -1,4 +1,4 @@
-# Техническая документация — Game Save Convert v4.3
+# Техническая документация — Game Save Convert v5.0
 
 ## Архитектура
 
@@ -13,24 +13,43 @@
 
 | Файл | Назначение |
 |------|-----------|
-| `Program.cs` | Точка входа, CLI-аргументы, оркестрация |
+| `Program.cs` | Точка входа, CLI-аргументы, оркестрация, авто-детекция игры |
 | `BruteForce.cs` | Chunk-based parallel HeaderKey pre-filter + полный перебор |
 | `SaveOperations.cs` | Decrypt/Encrypt/Re-sign/ReadSaveVersion/ProcessData001 через MandarinJuiceCore |
-| `SavePatching.cs` | Детекция платформы (Steam/Crack), BUILD константы, KnownBuildVersions, DefaultTargetBuild |
+| `SavePatching.cs` | Детекция платформы (Steam/Crack), BUILD константы, RE9AppId, SupportsBuildPatching |
 | `RemoteCacheGenerator.cs` | Генерация remotecache.vdf для Steam Cloud Sync (+ read-only атрибут) |
 | `SteamIds.cs` | Загрузка и парсинг steam_ids.txt (async, graceful timeout 1 сек) |
 | `ProgressForm.cs` | WinForms окно прогресса brute-force |
 | `Benchmark.cs` | Standalone тест скорости brute-force |
 
-## Алгоритм работы
+## Поддерживаемые игры
+
+| Игра | AppID | Алиасы | BUILD patching |
+|------|-------|--------|----------------|
+| Resident Evil 9 Requiem | 3764200 | `re9`, `requiem` | Да (авто-даунгрейд) |
+| Dragon's Dogma 2 | 2054970 | `dd2`, `dogma2` | Нет (только re-sign) |
+| Monster Hunter Wilds | 2246340 | `mhw`, `wilds` | Нет |
+| Monster Hunter Stories 3 | 2852190 | `mhs3`, `stories3` | Нет |
+| Dead Rising Deluxe Remaster | 2527390 | `dr`, `deadrising` | Нет |
+| Kunitsu-Gami | 2510710 | `kg`, `kunitsu` | Нет |
+| PRAGMATA | 3357650 | `pragmata` | Нет |
+| Mega Man Star Force | 3500390 | `mmsf`, `megaman`, `starforce` | Нет |
+
+## Алгоритм работы (v5.0)
 
 ```
 0. Очистка temp от предыдущих запусков
 1. Команда benchmark? → Benchmark.Run() → exit 0
-2. Парсинг аргументов (steam_id, путь, игра, -silent, -crack/-steam, -targetsavebuild)
-3. targetBuild = DefaultTargetBuild (0x01001002), или переопределённый через -targetsavebuild
-4. Детекция целевой платформы (автоматически по пути или принудительно через -crack/-steam)
-5. Загрузка профиля RE9 из <InstallDir>\mandarin\_profiles\*.bin
+2. Парсинг аргументов (steam_id, путь, [-game], -silent, -crack/-steam, -targetsavebuild)
+3. Авто-детекция AppID из пути (TryExtractAppIdFromPath)
+4. Резолв профилей:
+   - Если -game указан → ResolveGameAlias → фильтр по имени файла профиля
+   - Если AppID обнаружен → фильтр по profile.AppId
+   - Иначе → загрузить все профили
+5. BUILD patching gating:
+   - Если -targetsavebuild указан → effectiveTargetBuild = указанный
+   - Если SupportsBuildPatching(resolvedAppId) [RE9] → effectiveTargetBuild = DefaultTargetBuild
+   - Иначе → effectiveTargetBuild = null (без BUILD patching)
 6. Проверка папки сохранений (нет файлов → exit 0)
 7. Тест: расшифровка testFile с targetId
    └─ Если успех → сейвы уже совместимы (+ remotecache.vdf для Steam) → exit 0
@@ -39,28 +58,45 @@
    └─ Ошибка → лог "offline mode", идём дальше
 9. Если не найден → ProgressForm + полный brute-force (0..4.3B)
    └─ Отмена → Cleanup temp → exit 1
-10. Re-sign всех файлов во TEMP + BUILD downgrade (если curBuild > targetBuild)
+10. Version check + silent mode graceful:
+    - Если silentMode && неизвестный BUILD → effectiveTargetBuild = null
+11. Re-sign всех файлов во TEMP + BUILD downgrade (если effectiveTargetBuild != null)
     (ошибка → abort, оригиналы нетронуты)
-11. data00-1.bin: re-sign + BUILD downgrade + version+2 (только если BUILD реально понижен)
-12. Backup оригиналов (ошибка → abort, оригиналы нетронуты)
-13. Копирование re-signed из temp в папку сохранений
-14. remotecache.vdf (если Steam target) → read-only атрибут
-15. Очистка старых бэкапов (keep 3) → Cleanup temp → exit 0
+12. data00-1.bin: re-sign + BUILD downgrade + version+2 (только если BUILD реально понижен)
+13. Backup оригиналов (ошибка → abort, оригиналы нетронуты)
+14. Копирование re-signed из temp в папку сохранений
+15. remotecache.vdf (если Steam target, с динамическим AppID) → read-only атрибут
+16. Очистка старых бэкапов (keep 3) → Cleanup temp → exit 0
 ```
 
 **Exit codes:** 0=успех, 1=ошибка/отмена, 2=не найден
 
-## BruteForce — Chunk-based Parallel Pre-filter (v4)
+## Авто-детекция AppID (TryExtractAppIdFromPath)
 
-Ключевая оптимизация v4. Вместо Interlocked.Increment на каждой итерации — chunk-based параллелизм.
+Извлекает AppID из пути к сохранениям:
+- Steam: `userdata/<steam32>/<appid>/remote/...` → appid (позиция +2 после "userdata")
+- Crack: `GSE Saves/<appid>/remote/...` → appid (позиция +1 после "GSE Saves")
+
+Это позволяет сделать параметр `-game` опциональным.
+
+## BUILD patching gate (SupportsBuildPatching)
+
+BUILD patching (даунгрейд) выполняется **только для RE9** (AppID 3764200), так как:
+- Константы BUILD специфичны для RE9
+- Смещения BUILD в файлах могут отличаться между играми
+- Для других игр безопасно выполнять только re-sign
+
+Исключение: если пользователь явно указал `-targetsavebuild` — BUILD patching будет применён к любой игре.
+
+## BruteForce — Chunk-based Parallel Pre-filter
 
 ### Производительность
 
-| Метрика | v3.0 | v4.0 |
-|---------|------|------|
-| Throughput (1 поток) | ~18M ID/sec | ~830M ID/sec |
-| Throughput (все ядра) | N/A | ~5.9B ID/sec (12 ядер) |
-| Worst case (полный скан) | ~4 мин | ~1-17 сек |
+| Метрика | Значение |
+|---------|----------|
+| Throughput (1 поток) | ~830M ID/sec |
+| Throughput (все ядра) | ~5.9B ID/sec (12 ядер) |
+| Worst case (полный скан) | ~1-17 сек |
 
 ### Архитектура
 
@@ -69,17 +105,6 @@
 - **Progress report:** каждые 128 чанков (~8M IDs)
 - **Hot loop:** без аллокаций, без Interlocked, без progress callback
 - **Early exit:** `loopState.Stop()` при нахождении
-
-### HeaderKey Pre-filter
-
-Первые 64 байта каждого slice header в зашифрованном файле — это HeaderKey (статическое значение из MandarinDeencryptor), XOR'd с потоком SplitMix64. HeaderKey одинаков для всех userId, а SplitMix64 поток зависит от userId.
-
-1. Извлечь `HeaderKey` через reflection из `MandarinDeencryptor`
-2. Предвычислить `stateAfterQueue` и `expectedXorBytes` (64 байта)
-3. Для каждого кандидатного ID:
-   - 16 вызовов SplitMix64 (CalculateHeaderChecksum)
-   - Побайтовое сравнение (первый байт отсеивает 99.6%)
-4. Если pre-filter пройден → полная верификация через `MandarinDeencryptor.DecryptData`
 
 ### ParseVariant
 
@@ -90,14 +115,7 @@
 | 2 | `~steam64` | RE9 |
 | 3 | `~obfuscated(steam64)` | — |
 
-## Система даунгрейда BUILD (v4.3)
-
-### Изменения в v4.3
-
-- **Автоматический**: targetBuild всегда задан (по умолчанию `DefaultTargetBuild = 0x01001002`)
-- **Только даунгрейд**: `curBuild > targetBuild` → патч вниз. Если `curBuild <= targetBuild` → без изменений
-- **`-targetsavebuild`**: опциональное переопределение целевого BUILD
-- **Version patch**: `data00-1.bin` version+2 только если BUILD был реально понижен
+## Система даунгрейда BUILD (RE9)
 
 ### Соответствие BUILD и версий
 
@@ -115,16 +133,6 @@
 | data000.bin, *Slot*.bin | 0x5C | data000.bin, data000Slot0001AutoSave.bin |
 | data00-1.bin | 0x4C | Настройки, назначения клавиш |
 
-## data00-1.bin — version counter
-
-### Проблема
-
-Поле `version` по смещению 0x28 в `data00-1.bin` — внутренний счётчик, НЕ версия формата. Игра увеличивает его на +2 каждый запуск. Файл с `version` ниже ожидаемого **отвергается** игрой (сброс на дефолтные настройки).
-
-### Решение
-
-При даунгрейде `data00-1.bin`: если BUILD был реально понижен, увеличить `version` на +2.
-
 ## remotecache.vdf
 
 ### Расположение
@@ -138,58 +146,27 @@
         └── ...
 ```
 
-### Защита от перезаписи (v4)
+AppID передаётся динамически из resolvedAppId (по умолчанию 3764200 для обратной совместимости).
 
-После записи `remotecache.vdf` устанавливается атрибут `ReadOnly`:
-```csharp
-File.SetAttributes(vdfPath, FileAttributes.ReadOnly);
-```
+### Защита от перезаписи
 
-Перед перезаписью при повторном запуске — атрибут снимается.
+После записи `remotecache.vdf` устанавливается атрибут `ReadOnly`. Перед перезаписью при повторном запуске — атрибут снимается.
 
-## steam_ids.txt
+## pre-launch-steam.cmd
 
-**URL:** `https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/steam_ids.txt`
+Поддерживает все 8 игр + авто-детекцию через `%SteamAppId%`.
 
-**Cache-busting:** к URL добавляется `?t=<unix_timestamp>` для обхода CDN-кэша GitHub.
-
-**Timeout:** 1 секунда. При любой ошибке (сеть, timeout, парсинг) — graceful fallback на brute-force.
-
-**Формат:**
-```
-# Комментарий
-22202                    # Steam32
-76561197960287930         # Steam64
-1 915 550 405            # С пробелами — допустимо
-```
-
-## Таблица поведения по сценариям
-
-| Сценарий | Детекция | BUILD | data00-1 | remotecache.vdf |
-|----------|----------|-------|----------|-----------------|
-| **Crack → Steam** | auto (STEAM) или -steam | Downgrade если > target | Re-sign + patch если downgraded | Генерируется (read-only) |
-| **Steam → Crack** | auto (GSE) или -crack | Downgrade если > target | Re-sign + BUILD patch + version+2 если downgraded | Не генерируется |
-| **Crack → Crack** (другой ID) | auto (GSE) или -crack | Downgrade если > target | Re-sign + patch если downgraded | Не генерируется |
-| **Steam → Steam** (другой ID) | auto (STEAM) или -steam | Downgrade если > target | Re-sign + patch если downgraded | Генерируется (read-only) |
-| **Уже совместимы** | — | — | — | Генерируется (если Steam) |
-
-## Безопасность данных
-
-### Принцип: оригиналы неприкосновенны
-
-1. **Перешифровка** выполняется только в `%TEMP%\save-compat-work\resign\`
-2. Если ЛЮБОЙ файл не прошёл → abort, temp удаляется, оригиналы нетронуты
-3. **Бэкап** создаётся только после успешной перешифровки ВСЕХ файлов
-4. **Копирование** результатов из temp в папку сохранений — последний шаг
-5. При ошибке копирования → сообщение с путём к бэкапу для ручного восстановления
+При вызове без кода игры использует переменную `%SteamAppId%`, которую Steam автоматически устанавливает при запуске.
 
 ## Установщик (installer.exe)
 
 .NET Framework 4.x, компилируется как console app (`/target:exe`) для совместимости с CMD. В GUI-режиме вызывает `FreeConsole()`.
 
+URL профилей: `https://github.com/mi5hmash/MandarinJuice/releases/latest/download/_profiles.zip` — всегда актуальная версия.
+
 ### Режимы
 
-- **GUI**: запуск без аргументов → окно с прогрессом и логом, кнопка "Установить" сразу активна
+- **GUI**: запуск без аргументов → окно с прогрессом и логом
 - **Silent**: `/s`, `/silent`, `/quiet`, `/q` → вывод в консоль, без окон
 
 ## Сборка
@@ -228,6 +205,7 @@ game-save-convert/
 ├── .gitignore
 ├── steam_ids.txt          # База известных Steam ID
 ├── installer-v4.cs        # Исходник установщика
+├── pre-launch-steam.cmd   # Скрипт автозапуска для Steam
 └── save-convert-v4/       # Исходники основной утилиты
     ├── save-convert-v4.csproj
     ├── Program.cs
@@ -252,4 +230,4 @@ game-save-convert/
 
 **Формат:** `YYYY-MM-DD HH:mm:ss <сообщение>`
 
-Логируются: результат скачивания steam_ids.txt, результат list search, прогресс brute-force, шаги re-sign/backup/copy, BUILD patching, remotecache.vdf.
+Логируются: авто-детекция AppID, resolved профили, BUILD patching status, результат скачивания steam_ids.txt, результат list search, прогресс brute-force, шаги re-sign/backup/copy, remotecache.vdf.

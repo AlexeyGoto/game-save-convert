@@ -2,6 +2,11 @@ namespace SaveConvert;
 
 static class SavePatching
 {
+    public const string RE9AppId = "3764200";
+
+    public static bool SupportsBuildPatching(string? appId)
+        => appId == RE9AppId;
+
     public const int VersionOffset = 0x28;
     public const int BuildOffsetSlot = 0x5C;      // data000 + slots
     public const int BuildOffsetData001 = 0x4C;    // data00-1.bin

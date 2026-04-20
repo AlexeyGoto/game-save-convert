@@ -22,7 +22,7 @@ class Installer
 {
     static string installDir = @"C:\Tools\SaveCompat";
 
-    static string profilesZipUrl = "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.0.0/_profiles.zip";
+    static string profilesZipUrl = "https://github.com/mi5hmash/MandarinJuice/releases/latest/download/_profiles.zip";
     static string saveConvertZipUrl = "https://github.com/AlexeyGoto/game-save-convert/releases/latest/download/save-convert.zip";
     static string dotnetRuntimeUrl = "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.4/windowsdesktop-runtime-10.0.4-win-x64.exe";
     static string readmeRawUrl = "https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/README.md";
