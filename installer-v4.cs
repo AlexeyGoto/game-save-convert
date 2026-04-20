@@ -22,7 +22,7 @@ class Installer
 {
     static string installDir = @"C:\Tools\SaveCompat";
 
-    static string profilesZipUrl = "https://github.com/mi5hmash/MandarinJuice/releases/latest/download/_profiles.zip";
+    static string profilesZipUrl = "https://github.com/mi5hmash/MandarinJuice/releases/download/v1.1.1/_profiles.zip";
     static string saveConvertZipUrl = "https://github.com/AlexeyGoto/game-save-convert/releases/latest/download/save-convert.zip";
     static string dotnetRuntimeUrl = "https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop/10.0.4/windowsdesktop-runtime-10.0.4-win-x64.exe";
     static string readmeRawUrl = "https://raw.githubusercontent.com/AlexeyGoto/game-save-convert/main/README.md";
@@ -278,35 +278,40 @@ class Installer
         if (!Directory.Exists(profDir)) Directory.CreateDirectory(profDir);
         log("  " + installDir);
 
-        // Step 2: Download profiles
-        if (Directory.GetFiles(profDir, "*.bin").Length == 0)
+        // Step 2: Download/update profiles (always update to get latest games)
+        setStatus("\u0421\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u0435\u0439 \u0438\u0433\u0440...", 10);
+        log("[2/6] \u0421\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u0435\u0439 \u0438\u0433\u0440...");
         {
-            setStatus("\u0421\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u0435\u0439 \u0438\u0433\u0440...", 10);
-            log("[2/6] \u0421\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435 \u043F\u0440\u043E\u0444\u0438\u043B\u0435\u0439 \u0438\u0433\u0440...");
             string profZip = Path.Combine(tmp, "mandarin_profiles.zip");
-            DownloadFile(profilesZipUrl, profZip);
-
-            string tmpProf = Path.Combine(tmp, "mandarin_prof_extract");
-            if (Directory.Exists(tmpProf)) Directory.Delete(tmpProf, true);
-            ZipFile.ExtractToDirectory(profZip, tmpProf);
-
-            string profSrc = FindDirectory(tmpProf, "_profiles");
-            if (profSrc != null)
+            try
             {
-                CopyDirectory(profSrc, profDir);
-                log("  \u041F\u0440\u043E\u0444\u0438\u043B\u0438 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B: " + Directory.GetFiles(profDir, "*.bin").Length + " \u0448\u0442.");
-            }
-            else
-            {
-                log("  \u0412\u041D\u0418\u041C\u0410\u041D\u0418\u0415: \u043F\u0440\u043E\u0444\u0438\u043B\u0438 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u044B \u0432 \u0430\u0440\u0445\u0438\u0432\u0435");
-            }
+                DownloadFile(profilesZipUrl, profZip);
 
-            try { File.Delete(profZip); } catch { }
-            try { Directory.Delete(tmpProf, true); } catch { }
-        }
-        else
-        {
-            log("[2/6] \u041F\u0440\u043E\u0444\u0438\u043B\u0438 \u0443\u0436\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B (" + Directory.GetFiles(profDir, "*.bin").Length + " \u0448\u0442.)");
+                string tmpProf = Path.Combine(tmp, "mandarin_prof_extract");
+                if (Directory.Exists(tmpProf)) Directory.Delete(tmpProf, true);
+                ZipFile.ExtractToDirectory(profZip, tmpProf);
+
+                string profSrc = FindDirectory(tmpProf, "_profiles");
+                if (profSrc != null)
+                {
+                    CopyDirectory(profSrc, profDir);
+                    log("  \u041F\u0440\u043E\u0444\u0438\u043B\u0438 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B: " + Directory.GetFiles(profDir, "*.bin").Length + " \u0448\u0442.");
+                }
+                else
+                {
+                    log("  \u0412\u041D\u0418\u041C\u0410\u041D\u0418\u0415: \u043F\u0440\u043E\u0444\u0438\u043B\u0438 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u044B \u0432 \u0430\u0440\u0445\u0438\u0432\u0435");
+                }
+
+                try { File.Delete(profZip); } catch { }
+                try { Directory.Delete(tmpProf, true); } catch { }
+            }
+            catch (Exception ex)
+            {
+                if (Directory.GetFiles(profDir, "*.bin").Length > 0)
+                    log("  \u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u044C (" + ex.Message + "), \u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u044E\u0442\u0441\u044F \u0441\u0443\u0449\u0435\u0441\u0442\u0432\u0443\u044E\u0449\u0438\u0435 (" + Directory.GetFiles(profDir, "*.bin").Length + " \u0448\u0442.)");
+                else
+                    throw;
+            }
         }
 
         // Step 3: Install .NET 10 Desktop Runtime
